@@ -88,13 +88,7 @@ COMMON_KEY_AREAS = [
     {"area": "User Roles", "problem": "Limitations in defining different user roles and capabilities"}
 ]
 
-def create_client():
-    """Creates an AzureOpenAI client instance."""
-    return AzureOpenAI(
-        azure_endpoint=AZURE_ENDPOINT,
-        api_key=AZURE_API_KEY,
-        api_version=AZURE_API_VERSION,
-    )
+
 async def process_excel_data(
     client: AzureOpenAI, 
     file_content: bytes,
@@ -137,7 +131,7 @@ async def process_excel_data(
                     logger.info(f"Sheet {sheet_name}: {len(df)} rows, {len(df.columns)} columns")
                     
                     # Use identify_relevant_columns to find feedback and rating columns
-                    columns = await identify_relevant_columns(client, df)
+                    columns = await identify_relevant_columns(AZURE_CLIENT, df)
                     feedback_col = columns.get("feedback_col")
                     rating_col = columns.get("rating_col")
                     
@@ -204,7 +198,7 @@ async def process_excel_data(
         sample_feedback_text = '\n'.join(sample_feedbacks)
         
         # Identify key areas
-        key_area_list = await identify_key_areas(client, sample_feedback_text)
+        key_area_list = await identify_key_areas(AZURE_CLIENT, sample_feedback_text)
         
         # Ensure key_areas are strings, not dictionaries
         if key_area_list and isinstance(key_area_list[0], dict):
@@ -222,7 +216,7 @@ async def process_excel_data(
             logger.info("Using embeddings for feedback classification")
             
             # Generate embeddings for key areas
-            key_area_embeddings = await get_embeddings(client, key_areas)
+            key_area_embeddings = await get_embeddings(AZURE_CLIENT, key_areas)
             
             # Process feedback in batches for embedding
             feedback_texts = [item["text"] for item in all_feedback_items]
@@ -232,7 +226,7 @@ async def process_excel_data(
             for i in range(0, len(feedback_texts), batch_size):
                 batch = feedback_texts[i:i + batch_size]
                 logger.info(f"Generating embeddings for feedback batch {i//batch_size + 1}/{(len(feedback_texts) + batch_size - 1)//batch_size}")
-                batch_embeddings = await get_embeddings(client, batch)
+                batch_embeddings = await get_embeddings(AZURE_CLIENT, batch)
                 all_feedback_embeddings.extend(batch_embeddings)
             
             # Calculate similarity and classify using numpy
@@ -386,13 +380,13 @@ async def process_excel_data(
             os.unlink(temp_path)
             
             logger.info("Falling back to CSV processing for Excel data")
-            return await process_csv_data(client, csv_data)
+            return await process_csv_data(AZURE_CLIENT, csv_data)
         except Exception as fallback_error:
             logger.error(f"Excel fallback also failed: {str(fallback_error)}")
             # Final fallback - raw data
             logger.info("Falling back to raw data processing")
             excel_text = str(file_content)  # Very crude fallback
-            return await analyze_raw_data_chunks(client, excel_text)
+            return await analyze_raw_data_chunks(AZURE_CLIENT, excel_text)
 async def identify_key_areas(client: AzureOpenAI, data_sample: str, max_areas: int = 8) -> List[Dict[str, str]]:
     """
     Identifies key problem areas from customer feedback using OpenAI.
@@ -606,7 +600,7 @@ async def get_embeddings(client: AzureOpenAI, texts: List[str], slow_mode: bool 
                     logger.error(f"Error generating embeddings for batch {i//batch_size + 1}: {str(batch_error)}")
                     # For this batch, generate random embeddings as fallback
                     # Use fixed dimension of 3072 to match the model
-                    dim = 3072  # text-embedding-3-large dimension
+                    dim = 1536     # text-embedding-3-large dimension
                     logger.warning(f"Using fallback random embeddings for batch {i//batch_size + 1} with dimension {dim}")
                     for _ in range(len(batch_texts)):
                         random_embedding = list(np.random.normal(0, 0.1, dim))
@@ -1071,8 +1065,8 @@ async def classify_feedback_with_embeddings(
         
         # Get embeddings
         logging.info(f"Generating embeddings for {len(area_texts)} key areas and {len(feedback_texts)} feedback items")
-        area_embeddings = await get_embeddings(client, area_texts)
-        feedback_embeddings = await get_embeddings(client, feedback_texts)
+        area_embeddings = await get_embeddings(AZURE_CLIENT, area_texts)
+        feedback_embeddings = await get_embeddings(AZURE_CLIENT, feedback_texts)
         
         # Classify each feedback item
         classified_feedback = []
@@ -1204,7 +1198,7 @@ async def analyze_raw_data_chunks(
                 # Identify preliminary areas in this chunk
                 if feedbacks:
                     sample_feedback = '\n'.join(feedbacks[:50])
-                    areas = await identify_key_areas(client, sample_feedback, max_areas=5)
+                    areas = await identify_key_areas(AZURE_CLIENT, sample_feedback, max_areas=5)
                     chunk_areas.extend(areas)
                 
             except Exception as chunk_error:
@@ -1264,7 +1258,7 @@ async def analyze_raw_data_chunks(
             
         # STAGE 3: Use embeddings for fast classification
         # Generate embeddings for key areas
-        key_area_embeddings = await get_embeddings(client, final_areas)
+        key_area_embeddings = await get_embeddings(AZURE_CLIENT, final_areas)
         
         # Generate embeddings for all feedback
         feedback_texts = [item["text"] for item in all_feedbacks]
@@ -1276,7 +1270,7 @@ async def analyze_raw_data_chunks(
         for i in range(0, len(feedback_texts), batch_size):
             batch = feedback_texts[i:i + batch_size]
             logger.info(f"Generating embeddings for feedback batch {i//batch_size + 1}/{(len(feedback_texts) + batch_size - 1)//batch_size}")
-            batch_embeddings = await get_embeddings(client, batch)
+            batch_embeddings = await get_embeddings(AZURE_CLIENT, batch)
             all_feedback_embeddings.extend(batch_embeddings)
         
         # Function to calculate cosine similarity matrix
@@ -1365,7 +1359,7 @@ async def process_csv_data(
         logger.info(f"Parsed CSV with {len(df)} rows and {len(df.columns)} columns")
         
         # Use OpenAI to identify relevant columns
-        columns = await identify_relevant_columns(client, df)
+        columns = await identify_relevant_columns(AZURE_CLIENT, df)
         feedback_col = columns.get("feedback_col")
         rating_col = columns.get("rating_col")
         
@@ -1446,11 +1440,11 @@ async def process_csv_data(
         if slow_mode:
             # Original sequential implementation
             # Identify key areas
-            key_area_list = await identify_key_areas(client, sample_feedback_text)
+            key_area_list = await identify_key_areas(AZURE_CLIENT, sample_feedback_text)
         else:
             # Optimized parallel implementation - run identification tasks concurrently
             # This runs key area identification in parallel with other initialization tasks
-            key_area_task = asyncio.create_task(identify_key_areas(client, sample_feedback_text))
+            key_area_task = asyncio.create_task(identify_key_areas(AZURE_CLIENT, sample_feedback_text))
             
             # Continue with other initialization while key areas are being identified
             # ...Now get the key areas result when needed
@@ -1476,7 +1470,7 @@ async def process_csv_data(
             if slow_mode:
                 # Original sequential implementation
                 # Generate embeddings for key areas
-                key_area_embeddings = await get_embeddings(client, key_areas, slow_mode=True)
+                key_area_embeddings = await get_embeddings(AZURE_CLIENT, key_areas, slow_mode=True)
                 
                 # Process feedback in batches for embedding
                 feedback_texts = [item["text"] for item in feedback_items]
@@ -1485,7 +1479,7 @@ async def process_csv_data(
                 for i in range(0, len(feedback_texts), 300):
                     batch = feedback_texts[i:i + 300]
                     logger.info(f"Generating embeddings for feedback batch {i//300 + 1}/{(len(feedback_texts) + 300 - 1)//300}")
-                    batch_embeddings = await get_embeddings(client, batch, slow_mode=True)
+                    batch_embeddings = await get_embeddings(AZURE_CLIENT, batch, slow_mode=True)
                     all_feedback_embeddings.extend(batch_embeddings)
             else:
                 # Optimized parallel implementation
@@ -1493,8 +1487,8 @@ async def process_csv_data(
                 feedback_texts = [item["text"] for item in feedback_items]
                 logger.info(f"Generating embeddings for {len(key_areas)} key areas and {len(feedback_texts)} feedback items in parallel")
                 
-                key_area_task = asyncio.create_task(get_embeddings(client, key_areas))
-                feedback_task = asyncio.create_task(get_embeddings(client, feedback_texts))
+                key_area_task = asyncio.create_task(get_embeddings(AZURE_CLIENT, key_areas))
+                feedback_task = asyncio.create_task(get_embeddings(AZURE_CLIENT, feedback_texts))
                 
                 # Wait for both tasks to complete
                 key_area_embeddings, all_feedback_embeddings = await asyncio.gather(key_area_task, feedback_task)
@@ -1751,7 +1745,7 @@ async def process_csv_data(
         logger.error(f"Error processing CSV data: {str(e)}\n{traceback.format_exc()}")
         # Fall back to raw data processing
         logger.info("Falling back to raw data processing")
-        return await analyze_raw_data_chunks(client, csv_data, slow_mode=slow_mode)
+        return await analyze_raw_data_chunks(AZURE_CLIENT, csv_data, slow_mode=slow_mode)
 
 async def format_analysis_results(analysis_results: Dict[str, Any], return_raw_feedback: bool = False) -> Dict[str, Any]:
     """
@@ -1883,10 +1877,10 @@ async def analyze_feedback(
             # Process the data
             if is_csv:
                 logger.info(f"[JOB {job_id}] File detected as CSV, processing with structured data workflow")
-                analysis_results = await process_csv_data(client, file_text)
+                analysis_results = await process_csv_data(AZURE_CLIENT, file_text)
             else:
                 logger.info(f"[JOB {job_id}] File not detected as CSV, processing as raw text")
-                analysis_results = await analyze_raw_data_chunks(client, file_text)
+                analysis_results = await analyze_raw_data_chunks(AZURE_CLIENT, file_text)
         
         # Format the results with the return_raw_feedback parameter
         logger.info(f"[JOB {job_id}] Formatting final analysis results (return_raw_feedback={return_raw_feedback})")
