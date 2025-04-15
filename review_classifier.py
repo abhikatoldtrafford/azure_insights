@@ -32,7 +32,13 @@ AZURE_API_KEY = "bc0ba854d3644d7998a5034af62d03ce"
 AZURE_API_VERSION = "2024-02-01"  # Updated API version
 
 # Embedding model configuration
-EMBEDDING_MODEL = "text-embedding-3-large"  # Correct embedding model name
+EMBEDDING_MODEL = "text-embedding-3-small"  # Correct embedding model name
+AZURE_CLIENT = AzureOpenAI(
+    api_version=AZURE_API_VERSION,
+    azure_endpoint=AZURE_ENDPOINT,
+    api_key=AZURE_API_KEY
+)
+
 
 # Create standalone app (primary usage mode)
 app = FastAPI(
@@ -568,17 +574,6 @@ async def get_embeddings(client: AzureOpenAI, texts: List[str], slow_mode: bool 
         batch_size = 100 if slow_mode else 1000
         all_embeddings = []
         
-        # Hardcoded configuration for embeddings
-        EMBEDDING_MODEL = "text-embedding-3-large"  # Updated to correct model name
-        EMBEDDING_KEY = "bc0ba854d3644d7998a5034af62d03ce"  # Hardcoded key
-        
-        # Create a dedicated client for embeddings to ensure correct configuration
-        embedding_client = AzureOpenAI(
-            api_version="2024-02-01",  # Updated API version
-            azure_endpoint=AZURE_ENDPOINT,
-            api_key=EMBEDDING_KEY
-        )
-        
         logger.info(f"Generating embeddings for {len(texts)} texts using model {EMBEDDING_MODEL}")
         
         if slow_mode:
@@ -587,7 +582,7 @@ async def get_embeddings(client: AzureOpenAI, texts: List[str], slow_mode: bool 
                 batch_texts = texts[i:i + batch_size]
                 
                 try:
-                    response = embedding_client.embeddings.create(
+                    response = AZURE_CLIENT.embeddings.create(
                         model=EMBEDDING_MODEL,  # Use specific model name
                         input=batch_texts
                     )
@@ -620,7 +615,7 @@ async def get_embeddings(client: AzureOpenAI, texts: List[str], slow_mode: bool 
             # Optimized parallel implementation
             async def process_batch(batch_idx, batch_texts):
                 try:
-                    response = embedding_client.embeddings.create(
+                    response = AZURE_CLIENT.embeddings.create(
                         model=EMBEDDING_MODEL,
                         input=batch_texts
                     )
@@ -629,7 +624,7 @@ async def get_embeddings(client: AzureOpenAI, texts: List[str], slow_mode: bool 
                     return batch_embeddings
                 except Exception as batch_error:
                     logger.error(f"Error generating embeddings for batch {batch_idx+1}: {str(batch_error)}")
-                    dim = 3072  # text-embedding-3-large dimension
+                    dim = 1536   # text-embedding-3-large dimension
                     return [list(np.random.normal(0, 0.1, dim)) for _ in range(len(batch_texts))]
             
             # Split texts into batches
@@ -658,7 +653,7 @@ async def get_embeddings(client: AzureOpenAI, texts: List[str], slow_mode: bool 
         logger.error(f"Error generating embeddings: {str(e)}")
         # Generate random embeddings as fallback
         logger.warning("Using fallback random embeddings for all texts")
-        dim = 3072  # text-embedding-3-large dimension
+        dim = 1536   # text-embedding-3-large dimension
         return [list(np.random.normal(0, 0.1, dim)) for _ in range(len(texts))]
 def cosine_similarity_batch(A: np.ndarray, B: np.ndarray, slow_mode: bool = False) -> np.ndarray:
     """
@@ -1826,7 +1821,6 @@ async def analyze_feedback(
     Returns:
         JSONResponse with analysis results
     """
-    client = create_client()
     job_id = f"feedback_analysis_{int(time.time())}"
     
     try:
@@ -1846,7 +1840,7 @@ async def analyze_feedback(
         # Process Excel files
         if file_ext in ['.xlsx', '.xls', '.xlsm']:
             logger.info(f"[JOB {job_id}] Detected Excel file, processing with Excel-specific workflow")
-            analysis_results = await process_excel_data(client, file_content, file.filename)
+            analysis_results = await process_excel_data(AZURE_CLIENT, file_content, file.filename)
         else:
             # Handle CSV and other file types with existing logic
             try:
