@@ -263,7 +263,7 @@ async def process_excel_data(
             similarity_matrix = cosine_similarity_matrix(feedback_matrix, key_area_matrix)
             
             # Classify feedback based on similarity
-            similarity_threshold = 0.5
+            similarity_threshold = 0.7
             
             for i, similarities in enumerate(similarity_matrix):
                 # Get indices where similarity exceeds threshold
@@ -1323,7 +1323,7 @@ async def process_csv_data(
             similarity_matrix = cosine_similarity_batch(feedback_matrix, key_area_matrix, slow_mode=slow_mode)
             
             # Use same similarity threshold as Excel version (0.3)
-            similarity_threshold = 0.5
+            similarity_threshold = 0.7
             
             # Vectorized classification where possible
             if not slow_mode:
