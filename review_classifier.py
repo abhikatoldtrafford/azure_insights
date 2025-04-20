@@ -27,9 +27,9 @@ logging.basicConfig(
 logger = logging.getLogger("customer_feedback")
 
 # Azure OpenAI client configuration - reuse from main app
-AZURE_ENDPOINT = "https://kb-stellar.openai.azure.com/"
-AZURE_API_KEY = "bc0ba854d3644d7998a5034af62d03ce" 
-AZURE_API_VERSION = "2024-02-01"  # Updated API version
+AZURE_ENDPOINT = "https://prodhubfinnew-openai-97de.openai.azure.com/"
+AZURE_API_KEY = "97fa8c02f9e64e8ea5434987b11fe6f4" 
+AZURE_API_VERSION = "2024-12-01-preview"  # Updated API version
 
 # Embedding model configuration
 EMBEDDING_MODEL = "text-embedding-3-small"  # Correct embedding model name
@@ -60,34 +60,49 @@ app.add_middleware(
 router = APIRouter()
 
 # Common key areas from screenshot and expanded options
+# Change from dictionary format to simple list of areas
 COMMON_KEY_AREAS = [
-    {"area": "Reporting & Analytics", "problem": "Difficulty generating needed reports for data-driven decisions"},
-    {"area": "Automation & Workflows", "problem": "Manual processes that are tedious and error-prone"},
-    {"area": "Mobile Experience", "problem": "Limited mobile app functionality making remote work difficult"},
-    {"area": "Customization & Configurability", "problem": "Lack of flexibility in platform configuration"},
-    {"area": "Integrations & API Access", "problem": "Limited integrations slowing down workflows"},
-    {"area": "Access Control & Permissions", "problem": "Inadequate granular permissions for different teams"},
-    {"area": "Collaboration & Multi-Team Support", "problem": "Difficulties managing multiple teams and collaboration"},
-    {"area": "AI-Powered Decision Support", "problem": "Need help prioritizing features and making decisions"},
-    {"area": "User Interface", "problem": "Confusing or complicated user interface design"},
-    {"area": "Performance & Speed", "problem": "System slowness or performance issues"},
-    {"area": "Data Visualization", "problem": "Limited or ineffective ways to visualize data"},
-    {"area": "Onboarding & Training", "problem": "Difficulty learning how to use the platform effectively"},
-    {"area": "Customer Support", "problem": "Issues with getting help or support when needed"},
-    {"area": "Pricing & Cost", "problem": "Concerns about pricing structure or overall cost"},
-    {"area": "Feature Requests", "problem": "Requests for specific new functionality"},
-    {"area": "Bugs & Stability", "problem": "Unexpected errors or system crashes"},
-    {"area": "Documentation", "problem": "Unclear or insufficient documentation"},
-    {"area": "Reliability", "problem": "System downtime or reliability concerns"},
-    {"area": "Search Functionality", "problem": "Difficulty finding information or content"},
-    {"area": "Data Management", "problem": "Challenges with importing, exporting, or managing data"},
-    {"area": "Security & Privacy", "problem": "Concerns about data security or privacy"},
-    {"area": "Cross-platform Compatibility", "problem": "Issues with different devices or browsers"},
-    {"area": "Accessibility", "problem": "Challenges for users with disabilities"},
-    {"area": "Notifications & Alerts", "problem": "Missing or ineffective notification systems"},
-    {"area": "User Roles", "problem": "Limitations in defining different user roles and capabilities"}
+    "Reporting & Analytics",
+    "Automation & Workflows",
+    "Mobile Experience",
+    "Customization & Configurability",
+    "Integrations & API Access",
+    "Access Control & Permissions",
+    "Collaboration & Multi-Team Support",
+    "AI-Powered Decision Support",
+    "User Interface",
+    "Performance & Speed",
+    "Data Visualization",
+    "Onboarding & Training",
+    "Customer Support",
+    "Pricing & Cost",
+    "Feature Requests",
+    "Bugs & Stability",
+    "Documentation",
+    "Reliability",
+    "Search Functionality",
+    "Data Management",
+    "Security & Privacy",
+    "Cross-platform Compatibility",
+    "Accessibility",
+    "Notifications & Alerts",
+    "User Roles",
+    "App Navigation",
+    "App Crashes & Stability",
+    "Login & Authentication",
+    "App Response Time",
+    "Checkout Process",
+    "Mobile App Design",
+    "Cart Functionality",
+    "App Update Issues",
+    "Order Tracking",
+    "Payment Options",
+    "Account Management",
+    "App Search Functionality",
+    "Push Notifications",
+    "Wishlist & Favorites",
+    "App Filters & Sorting"
 ]
-
 
 async def process_excel_data(
     client: AzureOpenAI, 
@@ -194,29 +209,26 @@ async def process_excel_data(
         logger.info(f"Extracted {len(all_feedback_items)} feedback items from {len(sheet_dfs)} sheets")
             
         # Sample for key area identification (limit to 100 items to avoid token limits)
-        sample_feedbacks = [item["text"] for item in all_feedback_items[:100]]
+        sample_feedbacks = [item["text"] for item in all_feedback_items[:min(1000,len(all_feedback_items) // 2)]]
         sample_feedback_text = '\n'.join(sample_feedbacks)
         
         # Identify key areas
-        key_area_list = await identify_key_areas(AZURE_CLIENT, sample_feedback_text)
-        
-        # Ensure key_areas are strings, not dictionaries
-        if key_area_list and isinstance(key_area_list[0], dict):
-            key_areas = [area.get('area', f"Area {i+1}") for i, area in enumerate(key_area_list)]
-        else:
-            key_areas = key_area_list
+        key_areas = await identify_key_areas(AZURE_CLIENT, sample_feedback_text)
             
-        logger.info(f"Identified {len(key_areas)} key areas: {key_areas}")
+        logger.info(f"Identified {len(key_areas)} key areas")
         
-        # Initialize result structure with empty lists
-        classified_feedback = {str(area): [] for area in key_areas}
+        # IMPORTANT: Do not convert from dict to string here, preserve the full structure
+        # Initialize result structure with empty lists - use the area name as key
+        classified_feedback = {area.get('area', f"Area {i+1}"): [] for i, area in enumerate(key_areas)}
         
         # Use embeddings for classification
         try:
             logger.info("Using embeddings for feedback classification")
             
-            # Generate embeddings for key areas
-            key_area_embeddings = await get_embeddings(AZURE_CLIENT, key_areas)
+            # Create a list of just the area names for embeddings
+            problem_texts = [area.get('problem', f"Problem {i+1}") for i, area in enumerate(key_areas)]
+            key_area_embeddings = await get_embeddings(AZURE_CLIENT, problem_texts)
+            area_names = [area.get('area', f"Area {i+1}") for i, area in enumerate(key_areas)]
             
             # Process feedback in batches for embedding
             feedback_texts = [item["text"] for item in all_feedback_items]
@@ -251,7 +263,7 @@ async def process_excel_data(
             similarity_matrix = cosine_similarity_matrix(feedback_matrix, key_area_matrix)
             
             # Classify feedback based on similarity
-            similarity_threshold = 0.25
+            similarity_threshold = 0.5
             
             for i, similarities in enumerate(similarity_matrix):
                 # Get indices where similarity exceeds threshold
@@ -264,8 +276,8 @@ async def process_excel_data(
                 
                 # Add feedback to all matching areas
                 for match_idx in matches:
-                    if match_idx < len(key_areas):
-                        area = str(key_areas[match_idx])
+                    if match_idx < len(area_names):
+                        area = area_names[match_idx]
                         classified_feedback[area].append(feedback_texts[i])
             
             logger.info(f"Successfully classified {len(all_feedback_items)} feedback items using embeddings")
@@ -283,7 +295,7 @@ async def process_excel_data(
                 chunk_texts = [item["text"] for item in chunk]
                 
                 # Create prompt and classify
-                areas_text = "\n".join([f"{j+1}. {area}" for j, area in enumerate(key_areas)])
+                areas_text = "\n".join([f"{j+1}. {area.get('area', f'Area {j+1}')}" for j, area in enumerate(key_areas)])
                 feedback_text = "\n".join([f"Feedback {j+1}: {text}" for j, text in enumerate(chunk_texts)])
                 
                 prompt = f"""
@@ -312,7 +324,7 @@ async def process_excel_data(
                 
                 try:
                     response = client.chat.completions.create(
-                        model="gpt-4o-mini",
+                        model="gpt-4.1-mini",
                         messages=[
                             {"role": "system", "content": "You are a customer feedback classification system."},
                             {"role": "user", "content": prompt}
@@ -334,20 +346,20 @@ async def process_excel_data(
                                 
                                 # If no categories matched, assign to first category
                                 if not category_indices and key_areas:
-                                    first_area = str(key_areas[0])
+                                    first_area = key_areas[0].get('area', 'Area 1')
                                     classified_feedback[first_area].append(feedback_text)
                                 else:
                                     # Add to all matching categories
                                     for cat_idx in category_indices:
                                         if 0 <= cat_idx < len(key_areas):
-                                            area = str(key_areas[cat_idx])
+                                            area = key_areas[cat_idx].get('area', f'Area {cat_idx+1}')
                                             classified_feedback[area].append(feedback_text)
                 
                 except Exception as chunk_error:
                     logger.error(f"Error processing chunk {i//chunk_size + 1}: {str(chunk_error)}")
                     # Assign all feedbacks in this chunk to the first category as fallback
                     if key_areas:
-                        first_area = str(key_areas[0])
+                        first_area = key_areas[0].get('area', 'Area 1')
                         classified_feedback[first_area].extend(chunk_texts)
                 
                 # Avoid rate limits
@@ -359,7 +371,7 @@ async def process_excel_data(
             logger.info(f"  - {area}: {len(feedbacks)} items")
         
         return {
-            "key_areas": key_areas,
+            "key_areas": key_areas,  # Now returning the full dictionary structure
             "classified_feedback": classified_feedback
         }
         
@@ -387,7 +399,7 @@ async def process_excel_data(
             logger.info("Falling back to raw data processing")
             excel_text = str(file_content)  # Very crude fallback
             return await analyze_raw_data_chunks(AZURE_CLIENT, excel_text)
-async def identify_key_areas(client: AzureOpenAI, data_sample: str, max_areas: int = 8) -> List[Dict[str, str]]:
+async def identify_key_areas(client: AzureOpenAI, data_sample: str, max_areas: int = 15) -> List[Dict[str, str]]:
     """
     Identifies key problem areas from customer feedback using OpenAI.
     
@@ -401,56 +413,66 @@ async def identify_key_areas(client: AzureOpenAI, data_sample: str, max_areas: i
     """
     try:
         logger.info(f"Beginning key problem area identification using {len(data_sample)} characters of sample data")
-        
-        # Prepare the list of common areas for the model to consider
-        common_areas_json = json.dumps(COMMON_KEY_AREAS, indent=2)
+    
         # Prepare the prompt for OpenAI
         prompt = f"""
         # Customer Feedback Analysis Task
 
-        You are a senior product insights analyst specializing in customer feedback pattern recognition. Your expertise lies in identifying underlying themes and problems from diverse customer feedback.
+        You are a senior product insights analyst specializing in customer feedback pattern recognition. 
+        Your expertise lies in identifying underlying themes and problems from diverse customer feedback.
+        You are also expert in extracting app/ui specific problems which ruin the customer experience.
 
         ## Your Objective
-        Analyze the provided customer feedback data and identify the most significant problem areas that customers are experiencing. These insights will directly inform product development priorities.
+        Analyze the provided customer feedback data and identify the most significant problem areas that customers are experiencing, with a focus on user experience, app-related issues while still capturing important physical/in-store issues when relevant. These insights will directly inform product development priorities.
 
         ## Customer Feedback Data Sample
         ```
         {data_sample}
         ```
-
-        ## Reference Categories
-        Below are common problem areas we've seen in similar products. Use these as references but don't be limited by them:
-
-        ### Common Problem Areas:
-        {common_areas_json}
-
         ## Analysis Instructions:
         1. Carefully read and understand all customer feedback in the sample
+
         2. Identify the top {max_areas} most significant problem areas based on:
-           - Frequency (how many customers mention this issue)
-           - Severity (how impactful the problem seems to be)
-           - Specificity (clear, actionable problem statements)
-           - Business impact (issues affecting core product value)
-        
+        - Frequency (how many customers mention this issue)
+        - Severity (how impactful the problem seems to be)
+        - Specificity (clear, actionable problem statements)
+        - Business impact (issues affecting core product value)
+
         3. For each identified problem area:
-           - Create a concise, descriptive title (2-5 words) reflecting the functional area
-           - Write a specific problem statement from the customer's perspective
-           - Ensure the problem is concrete enough to be actionable
-           - Capture the essence of what customers are struggling with
+        - Create a concise, high-level area (2-3 words) reflecting the functional area
+        - Write a specific problem statement from the customer's perspective (1 sentence)
+        - Ensure the problem is concrete enough to be actionable
+        - Capture the essence of what customers are struggling with
+        - Note that the same high-level area (e.g., "App Performance") can have multiple specific problems
 
         4. You may:
-           - Select directly from the reference categories if they match well
-           - Adapt a reference category with more specific wording
-           - Create entirely new categories if the existing ones don't capture the feedback
-           - Combine similar issues into a single coherent problem area
+        - Select directly from the reference categories if they match well
+        - Adapt a reference category with more specific wording
+        - Create entirely new categories if the existing ones don't capture the feedback
+        - Combine similar issues into a single coherent problem area
+        - Group related issues under the same area with different problem statements
 
         ## Response Format Requirements
         You must format your response as a JSON array with each problem area having 'area' and 'problem' keys:
 
         ```json
         [
-            {{"area": "Reporting & Analytics", "problem": "I can't generate the reports I need to make data-driven decisions."}},
-            {{"area": "Mobile Experience", "problem": "The mobile app lacks key features, making it hard to work on the go."}}
+            {{"area": "Performance", "problem": "App frequently crashes when switching between multiple workout screens"}},
+            {{"area": "Performance", "problem": "Physical device overheats during extended outdoor training sessions"}},
+            {{"area": "User Interface", "problem": "App navigation requires too many taps to access core tracking features"}},,
+            {{"area": "User Interface", "problem": "Physical buttons on the device are difficult to press while wearing gloves"}},
+            {{"area": "Data Management", "problem": "App loses workout history when syncing with cloud services"}},
+            {{"area": "Data Management", "problem": "Limited onboard storage capacity prevents saving longer activity sessions"}},
+            {{"area": "Connectivity", "problem": "App fails to maintain Bluetooth connection with heart rate monitors"}},
+            {{"area": "Connectivity", "problem": "Device requires proprietary cables that are difficult to replace when damaged"}},
+            {{"area": "Tracking Accuracy", "problem": "App calorie calculations show inconsistent results compared to similar services"}},
+            {{"area": "Tracking Accuracy", "problem": "Physical sensors produce erratic readings during high-intensity workouts"}},
+            {{"area": "Customization", "problem": "App provides limited options for personalizing workout routines"}},
+            {{"area": "Customization", "problem": "Device band sizing options don't accommodate larger or smaller wrists"}},
+            {{"area": "Battery Life", "problem": "App continues to drain battery significantly when running in background"}},
+            {{"area": "Battery Life", "problem": "Physical device requires charging after every workout session"}},
+            {{"area": "Customer Support", "problem": "App troubleshooting guides don't address common synchronization problems"}},
+            {{"area": "Customer Support", "problem": "Replacement parts for physical device have extensive shipping delays"}}
         ]
         ```
 
@@ -459,7 +481,7 @@ async def identify_key_areas(client: AzureOpenAI, data_sample: str, max_areas: i
         
         # Call OpenAI API
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-4.1-mini",
             messages=[
                 {"role": "system", "content": "You are a product analytics specialist who identifies key problem areas from customer feedback."},
                 {"role": "user", "content": prompt}
@@ -770,7 +792,7 @@ async def identify_relevant_columns(client: AzureOpenAI, df: pd.DataFrame) -> Di
         """
         
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-4.1-mini",
             messages=[
                 {"role": "system", "content": "You are a data analysis assistant that identifies column types in customer feedback datasets."},
                 {"role": "user", "content": prompt}
@@ -872,256 +894,12 @@ async def identify_relevant_columns(client: AzureOpenAI, df: pd.DataFrame) -> Di
         # Return empty result, will fall back to heuristics
         return {"feedback_col": None, "rating_col": None}
 
-async def classify_feedback_with_openai(
-    client: AzureOpenAI,
-    key_areas: List[Dict[str, str]],
-    feedback_chunk: List[Dict[str, str]]
-) -> List[Dict[str, Any]]:
-    """
-    Classifies a chunk of feedback items into key areas using OpenAI directly.
-    
-    Args:
-        client: Azure OpenAI client
-        key_areas: List of key area dictionaries
-        feedback_chunk: List of feedback dictionaries with 'text' and 'index' keys
-        
-    Returns:
-        List of classified feedback with area assignments
-    """
-    try:
-        logger.info(f"Classifying chunk of {len(feedback_chunk)} feedback items using OpenAI")
-        
-        # Format key areas for the prompt
-        areas_text = "\n".join([f"{i+1}. {area['area']}: {area['problem']}" for i, area in enumerate(key_areas)])
-        
-        # Format feedback for the prompt
-        feedback_text = "\n".join([f"Feedback {i+1}: {item['text']}" for i, item in enumerate(feedback_chunk)])
-        
-        prompt = f"""
-        # Customer Feedback Classification Task
-
-        ## Problem Context
-        You are a specialized customer feedback analyst with expertise in categorizing feedback into relevant problem areas. This classification will be used to prioritize product improvements and understand customer pain points.
-
-        ## Key Problem Areas Identified:
-        ```
-        {areas_text}
-        ```
-
-        ## Customer Feedback To Classify:
-        ```
-        {feedback_text}
-        ```
-
-        ## Your Classification Task
-
-        Analyze each feedback item carefully and determine which problem area(s) it belongs to. Apply these principles:
-
-        1. **Multi-area Classification**: A single feedback may address multiple problem areas. Identify ALL relevant areas.
-        2. **Semantic Understanding**: Look for both explicit mentions and implicit references to problem areas.
-        3. **Customer Intent**: Focus on the underlying customer need or frustration.
-        4. **Contextual Relevance**: Consider the business context and how the feedback relates to product functionality.
-        5. **Evidence-Based**: Base your classification on specific phrases or sentiments in the feedback.
-
-        ### Classification Guidelines:
-        - Assign MULTIPLE areas if the feedback touches on different issues
-        - If a feedback is vague but leans toward a specific area, assign it there
-        - For ambiguous feedback that could fit multiple areas, assign to the most relevant ones
-        - If a feedback doesn't clearly match ANY area, leave the areas array empty
-        - Don't force-fit feedback into areas - quality of classification is critical
-
-        ## Required Response Format
-        Respond with a JSON object containing classifications for each feedback item:
-
-        ```json
-        {{
-            "classifications": [
-                {{
-                    "feedback_index": 0,
-                    "areas": [0, 2],
-                    "justification": "This feedback mentions reporting issues and data visualization problems"
-                }},
-                {{
-                    "feedback_index": 1,
-                    "areas": [1],
-                    "justification": "Clear mention of mobile app limitations"
-                }},
-                ...
-            ]
-        }}
-        ```
-
-        - "feedback_index" must match the index in the provided feedback list (0-based)
-        - "areas" must contain indices of matching problem areas (0-based)
-        - Include a brief justification explaining your classification reasoning
-        - If no areas match, use an empty array: "areas": []
-
-        Think carefully about each piece of feedback and its relationship to the defined problem areas.
-        """
-        
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "You are a customer feedback classification system."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.1,
-            response_format={"type": "json_object"}
-        )
-        
-        result_text = response.choices[0].message.content
-        result = json.loads(result_text)
-        
-        classifications = result.get("classifications", [])
-        
-        # Log classification details
-        logger.info(f"Received {len(classifications)} classifications from OpenAI")
-        for c in classifications[:3]:  # Log a few examples for debugging
-            justification = c.get("justification", "No justification provided")
-            area_indices = c.get("areas", [])
-            area_names = [key_areas[idx]["area"] for idx in area_indices if 0 <= idx < len(key_areas)]
-            logger.info(f"  - Feedback {c.get('feedback_index')}: assigned to {area_names} - {justification}")
-        
-        # Process the classifications
-        classified_feedback = []
-        
-        for item in feedback_chunk:
-            matching_classification = next(
-                (c for c in classifications if c.get("feedback_index") == item.get("chunk_index", 0)), 
-                {"areas": []}
-            )
-            
-            area_indices = matching_classification.get("areas", [])
-            matched_areas = [key_areas[idx]["area"] for idx in area_indices if 0 <= idx < len(key_areas)]
-            justification = matching_classification.get("justification", "")
-            
-            # If no areas matched and we have areas, assign to most likely area based on content
-            if not matched_areas and key_areas:
-                logger.warning(f"No areas matched for feedback: '{item['text'][:100]}...' - using fallback")
-                # Simple heuristic: use the first area as default
-                matched_areas = [key_areas[0]["area"]]
-            
-            classified_feedback.append({
-                "feedback": item["text"],
-                "original_index": item["original_index"],
-                "areas": matched_areas,
-                "justification": justification
-            })
-            
-        # Log overall statistics
-        area_counts = {}
-        for item in classified_feedback:
-            for area in item["areas"]:
-                area_counts[area] = area_counts.get(area, 0) + 1
-                
-        logger.info("Classification distribution:")
-        for area, count in area_counts.items():
-            logger.info(f"  - {area}: {count} items")
-            
-        logger.info(f"Successfully classified {len(classified_feedback)} feedback items")
-        
-        return classified_feedback
-        
-    except Exception as e:
-        logging.error(f"Error classifying feedback with OpenAI: {str(e)}")
-        # Fallback: assign all feedback to first area or "General Issues"
-        default_area = key_areas[0]["area"] if key_areas else "General Issues"
-        return [
-            {
-                "feedback": item["text"],
-                "original_index": item["original_index"],
-                "areas": [default_area]
-            }
-            for item in feedback_chunk
-        ]
-
-async def classify_feedback_with_embeddings(
-    client: AzureOpenAI, 
-    feedback_items: List[Dict[str, Any]], 
-    key_areas: List[Dict[str, str]],
-    similarity_threshold: float = 0.6
-) -> List[Dict[str, Any]]:
-    """
-    Classifies feedback items into key areas using embeddings.
-    
-    Args:
-        client: Azure OpenAI client
-        feedback_items: List of feedback dictionaries with 'text' and 'original_index' keys
-        key_areas: List of key area dictionaries
-        similarity_threshold: Minimum similarity score to classify a feedback
-        
-    Returns:
-        List of classified feedback with area assignments
-    """
-    try:
-        # Create texts to embed for key areas
-        area_texts = [f"{area['area']}: {area['problem']}" for area in key_areas]
-        
-        # Get texts to embed for feedback
-        feedback_texts = [item["text"] for item in feedback_items]
-        
-        if not feedback_texts or not area_texts:
-            return []
-        
-        # Get embeddings
-        logging.info(f"Generating embeddings for {len(area_texts)} key areas and {len(feedback_texts)} feedback items")
-        area_embeddings = await get_embeddings(AZURE_CLIENT, area_texts)
-        feedback_embeddings = await get_embeddings(AZURE_CLIENT, feedback_texts)
-        
-        # Classify each feedback item
-        classified_feedback = []
-        
-        for i, feedback_embedding in enumerate(feedback_embeddings):
-            feedback_item = feedback_items[i]
-            
-            # Calculate similarity with each key area
-            similarities = []
-            for j, area_embedding in enumerate(area_embeddings):
-                similarity = await cosine_similarity(feedback_embedding, area_embedding)
-                similarities.append((j, similarity))
-            
-            # Sort by similarity (highest first)
-            similarities.sort(key=lambda x: x[1], reverse=True)
-            
-            # Assign to all areas that meet the threshold
-            matched_areas = []
-            for j, similarity in similarities:
-                if similarity >= similarity_threshold:
-                    area_name = key_areas[j]['area']
-                    matched_areas.append(area_name)
-            
-            # If not assigned to any area, assign to the most similar one
-            if not matched_areas and similarities:
-                best_match_idx = similarities[0][0]
-                area_name = key_areas[best_match_idx]['area']
-                matched_areas.append(area_name)
-            
-            classified_feedback.append({
-                "feedback": feedback_item["text"],
-                "original_index": feedback_item["original_index"],
-                "areas": matched_areas
-            })
-        
-        return classified_feedback
-        
-    except Exception as e:
-        logging.error(f"Error classifying feedback with embeddings: {str(e)}")
-        # Fallback: assign all feedback to first area or "General Issues"
-        default_area = key_areas[0]["area"] if key_areas else "General Issues"
-        return [
-            {
-                "feedback": item["text"],
-                "original_index": item["original_index"],
-                "areas": [default_area]
-            }
-            for item in feedback_items
-        ]
-
 async def analyze_raw_data_chunks(
     client: AzureOpenAI, 
     raw_data: str,
     chunk_size: int = 8000,
-    overlap: int = 500
+    overlap: int = 500,
+    slow_mode: bool = False
 ) -> Dict[str, Any]:
     """
     Analyzes raw unstructured data by chunking and processing with OpenAI.
@@ -1131,6 +909,7 @@ async def analyze_raw_data_chunks(
         raw_data: Raw text data
         chunk_size: Size of chunks to process
         overlap: Overlap between chunks
+        slow_mode: If True, use the original sequential processing
         
     Returns:
         Dictionary with key areas and classified feedback
@@ -1167,7 +946,7 @@ async def analyze_raw_data_chunks(
             
             try:
                 response = client.chat.completions.create(
-                    model="gpt-4o-mini",
+                    model="gpt-4.1-mini",
                     messages=[
                         {"role": "system", "content": "You are a customer feedback analyzer."},
                         {"role": "user", "content": prompt}
@@ -1198,7 +977,7 @@ async def analyze_raw_data_chunks(
                 # Identify preliminary areas in this chunk
                 if feedbacks:
                     sample_feedback = '\n'.join(feedbacks[:50])
-                    areas = await identify_key_areas(AZURE_CLIENT, sample_feedback, max_areas=5)
+                    areas = await identify_key_areas(AZURE_CLIENT, sample_feedback, max_areas=15)
                     chunk_areas.extend(areas)
                 
             except Exception as chunk_error:
@@ -1214,20 +993,23 @@ async def analyze_raw_data_chunks(
             areas_text = json.dumps(chunk_areas, indent=2)
             prompt = f"""
             I have identified multiple potential problem areas from customer feedback chunks. 
-            Please consolidate these into 5-8 main categories:
+            Please consolidate these into 5-8 main categories.
             
             {areas_text}
             
             For each category:
             1. Provide a short, consistent name (2-3 words)
+            2. Provide a specific problem statement from the customer's perspective
             
-            Only include the category names, no descriptions or problems.
-            Format your response as a JSON array of strings.
-            Example: ["Category 1", "Category 2", "Category 3"]
+            Format your response as a JSON array of objects with 'area' and 'problem' keys:
+            [
+                {{"area": "User Interface", "problem": "The app navigation requires too many taps to access core features"}},
+                {{"area": "Performance", "problem": "The app frequently crashes during extended usage sessions"}}
+            ]
             """
             
             response = client.chat.completions.create(
-                model="gpt-4o-mini",
+                model="gpt-4.1-mini",
                 messages=[
                     {"role": "system", "content": "You are a product analytics specialist who identifies key problem areas from customer feedback."},
                     {"role": "user", "content": prompt}
@@ -1243,22 +1025,42 @@ async def analyze_raw_data_chunks(
             final_areas = []
             if isinstance(result, dict) and any(isinstance(v, list) for v in result.values()):
                 for k, v in result.items():
-                    if isinstance(v, list) and all(isinstance(x, str) for x in v):
-                        final_areas = v
-                        break
-            elif isinstance(result, list) and all(isinstance(x, str) for x in result):
-                final_areas = result
-            else:
-                # Use unique categories from chunks
-                final_areas = list(set(chunk_areas)) if all(isinstance(x, str) for x in chunk_areas) else ["General Issues", "Equipment Problems", "Staff & Service", "Facility Maintenance"]
+                    if isinstance(v, list) and all(isinstance(x, dict) for x in v):
+                        if all('area' in x for x in v):
+                            final_areas = v
+                            break
+            elif isinstance(result, list) and all(isinstance(x, dict) for x in result):
+                if all('area' in x for x in result):
+                    final_areas = result
+            
+            # If we couldn't parse the consolidated areas properly, use the raw chunk areas
+            if not final_areas:
+                logger.warning("Could not parse consolidated areas, using raw chunk areas")
+                # Try to handle both dictionary and string formats
+                if chunk_areas and isinstance(chunk_areas[0], dict) and 'area' in chunk_areas[0]:
+                    final_areas = chunk_areas
+                else:
+                    # Convert strings to dictionaries
+                    final_areas = [{"area": area, "problem": f"Issues related to {area.lower()}"} 
+                                  for area in chunk_areas if isinstance(area, str)]
         else:
-            final_areas = ["General Issues", "Equipment Problems", "Staff & Service", "Facility Maintenance"]
+            # Create default areas if none were identified
+            final_areas = [
+                {"area": "General Issues", "problem": "Various general problems with the service or product"},
+                {"area": "Equipment Problems", "problem": "Issues with physical equipment or hardware"},
+                {"area": "Staff & Service", "problem": "Problems with staff behavior or service quality"},
+                {"area": "Facility Maintenance", "problem": "Issues with facility cleanliness or maintenance"}
+            ]
         
-        logger.info(f"Consolidated into {len(final_areas)} final areas: {final_areas}")
+        logger.info(f"Consolidated into {len(final_areas)} final areas")
+        for i, area in enumerate(final_areas):
+            logger.info(f"  {i+1}. {area.get('area')}: {area.get('problem')}")
             
         # STAGE 3: Use embeddings for fast classification
-        # Generate embeddings for key areas
-        key_area_embeddings = await get_embeddings(AZURE_CLIENT, final_areas)
+        # Generate embeddings for key areas - use only the area names for embedding
+        problem_texts = [area.get('problem', f"Problem related to {area.get('area', 'unknown')}") for area in final_areas]
+        key_area_embeddings = await get_embeddings(AZURE_CLIENT, problem_texts)
+        area_names = [area.get('area') for area in final_areas]
         
         # Generate embeddings for all feedback
         feedback_texts = [item["text"] for item in all_feedbacks]
@@ -1300,7 +1102,7 @@ async def analyze_raw_data_chunks(
         
         # Classify feedback based on similarity
         similarity_threshold = 0.3  # Lower threshold to match more feedback
-        classified_feedback = {str(area): [] for area in final_areas}
+        classified_feedback = {area.get('area'): [] for area in final_areas}
         
         for i, similarities in enumerate(similarity_matrix):
             # Get indices where similarity exceeds threshold
@@ -1314,23 +1116,36 @@ async def analyze_raw_data_chunks(
             # Add feedback to all matching areas
             for match_idx in matches:
                 if match_idx < len(final_areas):
-                    area = str(final_areas[match_idx])
+                    area = final_areas[match_idx].get('area')
                     classified_feedback[area].append(feedback_texts[i])
         
         logger.info(f"Classified {len(all_feedbacks)} feedback items into {len(final_areas)} areas")
         
         return {
-            "key_areas": final_areas,
+            "key_areas": final_areas,  # Return the full dictionary structure
             "classified_feedback": classified_feedback
         }
         
     except Exception as e:
         logger.error(f"Error in raw data analysis: {str(e)}\n{traceback.format_exc()}")
-        basic_areas = ["General Issues", "Equipment Problems", "Staff & Service", "Facility Maintenance"]
+        # Create default areas if exception occurs
+        basic_areas = [
+            {"area": "General Issues", "problem": "Various general problems with the service or product"},
+            {"area": "Equipment Problems", "problem": "Issues with physical equipment or hardware"},
+            {"area": "Staff & Service", "problem": "Problems with staff behavior or service quality"},
+            {"area": "Facility Maintenance", "problem": "Issues with facility cleanliness or maintenance"}
+        ]
+        # Create a simple fallback classification
+        feedback_by_area = {}
+        for i, area in enumerate(basic_areas):
+            area_name = area.get('area')
+            start_idx = (len(all_feedbacks) * i) // len(basic_areas)
+            end_idx = (len(all_feedbacks) * (i+1)) // len(basic_areas)
+            feedback_by_area[area_name] = [item["text"] for item in all_feedbacks[start_idx:end_idx]]
+        
         return {
             "key_areas": basic_areas,
-            "classified_feedback": {str(area): [item["text"] for item in all_feedbacks[:len(all_feedbacks)//4]] 
-                                  for i, area in enumerate(basic_areas)}
+            "classified_feedback": feedback_by_area
         }
 
 async def process_csv_data(
@@ -1433,14 +1248,14 @@ async def process_csv_data(
             
         logger.info(f"Extracted {len(feedback_items)} feedback items")
             
-        # Sample for key area identification (limit to 100 items to avoid token limits)
-        sample_feedbacks = [item["text"] for item in feedback_items[:100]]
+        # Sample for key area identification (using same logic as Excel processing)
+        sample_feedbacks = [item["text"] for item in feedback_items[:min(1000, len(feedback_items) // 2)]]
         sample_feedback_text = '\n'.join(sample_feedbacks)
         
         if slow_mode:
             # Original sequential implementation
             # Identify key areas
-            key_area_list = await identify_key_areas(AZURE_CLIENT, sample_feedback_text)
+            key_areas = await identify_key_areas(AZURE_CLIENT, sample_feedback_text)
         else:
             # Optimized parallel implementation - run identification tasks concurrently
             # This runs key area identification in parallel with other initialization tasks
@@ -1448,29 +1263,26 @@ async def process_csv_data(
             
             # Continue with other initialization while key areas are being identified
             # ...Now get the key areas result when needed
-            key_area_list = await key_area_task
-            
-        logger.info(f"Identified {len(key_area_list)} key areas before type conversion")
+            key_areas = await key_area_task
         
-        # Ensure key_areas are strings, not dictionaries
-        if key_area_list and isinstance(key_area_list[0], dict):
-            key_areas = [area.get('area', f"Area {i+1}") for i, area in enumerate(key_area_list)]
-        else:
-            key_areas = key_area_list
-            
-        logger.info(f"Final key areas (as strings): {key_areas}")
+        logger.info(f"Identified {len(key_areas)} key areas")
         
-        # Initialize result structure with empty lists
-        classified_feedback = {str(area): [] for area in key_areas}
+        # IMPORTANT: No conversion from dict to string here, preserve the full structure
+        # Initialize result structure with empty lists - use the area name as key
+        classified_feedback = {area.get('area', f"Area {i+1}"): [] for i, area in enumerate(key_areas)}
         
         # Use embeddings for classification with optimized processing
         try:
             logger.info("Using embeddings for fast feedback classification")
             
+            # Create a list of problem texts and area names
+            problem_texts = [area.get('problem', f"Problem {i+1}") for i, area in enumerate(key_areas)]
+            area_names = [area.get('area', f"Area {i+1}") for i, area in enumerate(key_areas)]
+            
             if slow_mode:
                 # Original sequential implementation
-                # Generate embeddings for key areas
-                key_area_embeddings = await get_embeddings(AZURE_CLIENT, key_areas, slow_mode=True)
+                # Use problem texts for embeddings (like Excel version)
+                key_area_embeddings = await get_embeddings(AZURE_CLIENT, problem_texts, slow_mode=True)
                 
                 # Process feedback in batches for embedding
                 feedback_texts = [item["text"] for item in feedback_items]
@@ -1485,9 +1297,10 @@ async def process_csv_data(
                 # Optimized parallel implementation
                 # Run both embedding generations in parallel using asyncio.gather()
                 feedback_texts = [item["text"] for item in feedback_items]
-                logger.info(f"Generating embeddings for {len(key_areas)} key areas and {len(feedback_texts)} feedback items in parallel")
+                logger.info(f"Generating embeddings for {len(problem_texts)} key areas and {len(feedback_texts)} feedback items in parallel")
                 
-                key_area_task = asyncio.create_task(get_embeddings(AZURE_CLIENT, key_areas))
+                # Use problem_texts for embeddings instead of area_names
+                key_area_task = asyncio.create_task(get_embeddings(AZURE_CLIENT, problem_texts))
                 feedback_task = asyncio.create_task(get_embeddings(AZURE_CLIENT, feedback_texts))
                 
                 # Wait for both tasks to complete
@@ -1509,8 +1322,8 @@ async def process_csv_data(
             # Calculate similarity with vectorized operations
             similarity_matrix = cosine_similarity_batch(feedback_matrix, key_area_matrix, slow_mode=slow_mode)
             
-            # Classify feedback based on similarity
-            similarity_threshold = 0.25
+            # Use same similarity threshold as Excel version (0.3)
+            similarity_threshold = 0.5
             
             # Vectorized classification where possible
             if not slow_mode:
@@ -1524,11 +1337,11 @@ async def process_csv_data(
                     for i, row_idx in enumerate(np.where(no_matches)[0]):
                         matches[row_idx, best_matches[i]] = True
                 
-                # Add feedback to matching areas
+                # Add feedback to matching areas - use area names as keys
                 for i in range(matches.shape[0]):
                     for j in np.where(matches[i])[0]:
-                        if j < len(key_areas):
-                            area = str(key_areas[j])
+                        if j < len(area_names):
+                            area = area_names[j]
                             classified_feedback[area].append(feedback_texts[i])
             else:
                 # Original non-vectorized implementation
@@ -1541,10 +1354,10 @@ async def process_csv_data(
                         best_match = np.argmax(similarities)
                         matches = [best_match]
                     
-                    # Add feedback to all matching areas
+                    # Add feedback to all matching areas - use area names as keys
                     for match_idx in matches:
-                        if match_idx < len(key_areas):
-                            area = str(key_areas[match_idx])
+                        if match_idx < len(area_names):
+                            area = area_names[match_idx]
                             classified_feedback[area].append(feedback_texts[i])
             
             logger.info(f"Successfully classified {len(all_feedback_embeddings)} feedback items using embeddings")
@@ -1562,13 +1375,10 @@ async def process_csv_data(
                     logger.info(f"Processing feedback chunk {i//chunk_size + 1}/{(len(feedback_items) + chunk_size - 1)//chunk_size}")
                     chunk = feedback_items[i:i + min(chunk_size, len(feedback_items) - i)]
                     
-                    # ... rest of the original implementation ...
-                    # This section is unchanged because it involves API calls that are best done
-                    # sequentially to avoid rate limiting issues
                     chunk_texts = [item["text"] for item in chunk]
                     
                     # Create prompt and classify
-                    areas_text = "\n".join([f"{j+1}. {area}" for j, area in enumerate(key_areas)])
+                    areas_text = "\n".join([f"{j+1}. {area.get('area', f'Area {j+1}')}" for j, area in enumerate(key_areas)])
                     feedback_text = "\n".join([f"Feedback {j+1}: {text}" for j, text in enumerate(chunk_texts)])
                     
                     prompt = f"""
@@ -1597,7 +1407,7 @@ async def process_csv_data(
                     
                     try:
                         response = client.chat.completions.create(
-                            model="gpt-4o-mini",
+                            model="gpt-4.1-mini",
                             messages=[
                                 {"role": "system", "content": "You are a customer feedback classification system."},
                                 {"role": "user", "content": prompt}
@@ -1619,20 +1429,20 @@ async def process_csv_data(
                                     
                                     # If no categories matched, assign to first category
                                     if not category_indices and key_areas:
-                                        first_area = str(key_areas[0])
+                                        first_area = key_areas[0].get('area', 'Area 1')
                                         classified_feedback[first_area].append(feedback_text)
                                     else:
                                         # Add to all matching categories
                                         for cat_idx in category_indices:
                                             if 0 <= cat_idx < len(key_areas):
-                                                area = str(key_areas[cat_idx])
+                                                area = key_areas[cat_idx].get('area', f'Area {cat_idx+1}')
                                                 classified_feedback[area].append(feedback_text)
                     
                     except Exception as chunk_error:
                         logger.error(f"Error processing chunk {i//chunk_size + 1}: {str(chunk_error)}")
                         # Assign all feedbacks in this chunk to the first category as fallback
                         if key_areas:
-                            first_area = str(key_areas[0])
+                            first_area = key_areas[0].get('area', 'Area 1')
                             classified_feedback[first_area].extend(chunk_texts)
                     
                     # Avoid rate limits
@@ -1653,7 +1463,7 @@ async def process_csv_data(
                         chunk_texts = [item["text"] for item in chunk]
                         
                         # Create prompt and classify
-                        areas_text = "\n".join([f"{j+1}. {area}" for j, area in enumerate(key_areas)])
+                        areas_text = "\n".join([f"{j+1}. {area.get('area', f'Area {j+1}')}" for j, area in enumerate(key_areas)])
                         feedback_text = "\n".join([f"Feedback {j+1}: {text}" for j, text in enumerate(chunk_texts)])
                         
                         prompt = f"""
@@ -1682,7 +1492,7 @@ async def process_csv_data(
                         
                         try:
                             response = client.chat.completions.create(
-                                model="gpt-4o-mini",
+                                model="gpt-4.1-mini",
                                 messages=[
                                     {"role": "system", "content": "You are a customer feedback classification system."},
                                     {"role": "user", "content": prompt}
@@ -1704,12 +1514,12 @@ async def process_csv_data(
                                         feedback_text = chunk_texts[feedback_idx]
                                         
                                         if not category_indices and key_areas:
-                                            first_area = str(key_areas[0])
+                                            first_area = key_areas[0].get('area', 'Area 1')
                                             classifications.append((first_area, feedback_text))
                                         else:
                                             for cat_idx in category_indices:
                                                 if 0 <= cat_idx < len(key_areas):
-                                                    area = str(key_areas[cat_idx])
+                                                    area = key_areas[cat_idx].get('area', f'Area {cat_idx+1}')
                                                     classifications.append((area, feedback_text))
                             return classifications
                         
@@ -1717,7 +1527,7 @@ async def process_csv_data(
                             logger.error(f"Error processing chunk {chunk_idx + 1}: {str(chunk_error)}")
                             # Assign all feedbacks in this chunk to the first category as fallback
                             if key_areas:
-                                first_area = str(key_areas[0])
+                                first_area = key_areas[0].get('area', 'Area 1')
                                 return [(first_area, text) for text in chunk_texts]
                             return []
                 
@@ -1737,7 +1547,7 @@ async def process_csv_data(
             logger.info(f"  - {area}: {len(feedbacks)} items")
         
         return {
-            "key_areas": key_areas,
+            "key_areas": key_areas,  # Now returning the full dictionary structure
             "classified_feedback": classified_feedback
         }
         
@@ -1746,7 +1556,6 @@ async def process_csv_data(
         # Fall back to raw data processing
         logger.info("Falling back to raw data processing")
         return await analyze_raw_data_chunks(AZURE_CLIENT, csv_data, slow_mode=slow_mode)
-
 async def format_analysis_results(analysis_results: Dict[str, Any], return_raw_feedback: bool = False) -> Dict[str, Any]:
     """
     Format the analysis results into the final structure.
@@ -1765,18 +1574,18 @@ async def format_analysis_results(analysis_results: Dict[str, Any], return_raw_f
     formatted_results = []
     
     # Process each key area
-    for area in key_areas:
-        # Ensure area is a string key
-        area_str = str(area)
-        area_feedbacks = classified_feedback.get(area_str, [])
-        
-        # For backward compatibility with old format
-        if isinstance(area, dict):
-            area_name = area.get("area", "Unknown Area")
-            area_problem = area.get("problem", "") 
+    for area_obj in key_areas:
+        if isinstance(area_obj, dict):
+            # Get area name and problem from the dictionary
+            area_name = area_obj.get("area", "Unknown Area")
+            area_problem = area_obj.get("problem", f"Issues related to {area_name.lower()}")
         else:
-            area_name = area_str
-            area_problem = f"Issues related to {area_str.lower()}"
+            # Fallback for string-only areas
+            area_name = str(area_obj)
+            area_problem = f"Issues related to {area_name.lower()}"
+        
+        # Get the feedback for this area
+        area_feedbacks = classified_feedback.get(area_name, [])
         
         result = {
             "key_area": area_name,
