@@ -1745,6 +1745,511 @@ async def standalone_analyze_feedback(
         JSONResponse with analysis results
     """
     return await analyze_feedback(file, return_raw_feedback)
+@app.post("/classify-single-review")
+async def standalone_classify_single_review(
+    request: Request = None,
+    review: str = Form(None),
+    existing_json: str = Form(None)
+) -> JSONResponse:
+    """
+    Standalone version of the classify-single-review endpoint.
+    Accepts both JSON body and form data.
+    
+    Args:
+        request: FastAPI request object containing JSON
+        review: Review text (when using form data)
+        existing_json: Existing categories (when using form data)
+        
+    Returns:
+        JSONResponse with classification result containing key_area and customer_problem
+    """
+    # Handle both form data and JSON body
+    if review is not None:
+        # Form data was provided
+        return await classify_single_review(review=review, existing_json=existing_json)
+    else:
+        # Process as JSON body
+        return await classify_single_review(request=request)
+
+@router.post("/classify-single-review")
+async def classify_single_review(
+    request: Request = None,
+    review: str = None,
+    existing_json: str = None
+) -> JSONResponse:
+    """
+    Classifies a single review against existing categories using GPT-4.1.
+    Accepts input either as a JSON request body or as form parameters.
+    
+    Args:
+        request: FastAPI request object containing JSON with 'review' and 'existing_json'
+        review: Direct string input for review (alternative to request)
+        existing_json: Direct string/JSON input for categories (alternative to request)
+        
+    Returns:
+        JSONResponse with classification result containing key_area and customer_problem
+    """
+    try:
+        # Parse input from either request body or direct parameters
+        review_text = ""
+        existing_categories_raw = []
+        
+        # Get data from request body if provided and other params are None
+        if request is not None and review is None:
+            try:
+                data = await request.json()
+                review_text = data.get("review", "")
+                existing_categories_raw = data.get("existing_json", [])
+            except Exception as e:
+                logger.warning(f"Error parsing request JSON: {str(e)}")
+                # Try to get data from form if JSON parsing failed
+                form = await request.form()
+                review_text = form.get("review", "")
+                existing_json_str = form.get("existing_json", "")
+                if existing_json_str:
+                    try:
+                        existing_categories_raw = json.loads(existing_json_str)
+                    except:
+                        logger.warning("Could not parse existing_json as JSON")
+                        existing_categories_raw = []
+        else:
+            # Get data from direct parameters
+            review_text = review or ""
+            if existing_json:
+                try:
+                    # Try to parse as JSON if it's a string
+                    if isinstance(existing_json, str):
+                        try:
+                            existing_categories_raw = json.loads(existing_json)
+                        except:
+                            logger.warning("Could not parse existing_json string as JSON")
+                            existing_categories_raw = []
+                    else:
+                        existing_categories_raw = existing_json
+                except:
+                    logger.warning("Error processing existing_json parameter")
+                    existing_categories_raw = []
+        
+        # Store original raw request for potential fallback
+        original_json_data = existing_json if isinstance(existing_json, str) else json.dumps(existing_categories_raw) if existing_categories_raw else "[]"
+        
+        # Validate review input - if empty, use a generic placeholder
+        if not review_text or review_text.strip() == "":
+            review_text = "This is a general feedback that needs classification."
+            logger.warning("Empty review text provided, using generic placeholder")
+        else:
+            logger.info(f"Processing review: {review_text[:100]}...")
+        
+        # Process existing categories - handle empty input gracefully
+        existing_categories = []
+        
+        # Handle different possible JSON formats
+        if isinstance(existing_categories_raw, list):
+            existing_categories = existing_categories_raw
+        elif isinstance(existing_categories_raw, dict) and "analysis_results" in existing_categories_raw:
+            existing_categories = existing_categories_raw.get("analysis_results", [])
+        elif isinstance(existing_categories_raw, str) and existing_categories_raw.strip():
+            try:
+                json_data = json.loads(existing_categories_raw)
+                if isinstance(json_data, list):
+                    existing_categories = json_data
+                elif isinstance(json_data, dict) and "analysis_results" in json_data:
+                    existing_categories = json_data.get("analysis_results", [])
+            except:
+                logger.warning("Could not parse existing_json as JSON string")
+        
+        # If no categories provided or parsing failed, create a default category
+        if not existing_categories:
+            logger.warning("No valid categories found, using default categories")
+        logger.info(f"Processing with {len(existing_categories)} categories")
+        
+        # Extract just key_area and customer_problem from existing categories
+        simplified_categories = []
+        for category in existing_categories:
+            if isinstance(category, dict) and "key_area" in category and "customer_problem" in category:
+                simplified_categories.append({
+                    "key_area": category["key_area"],
+                    "customer_problem": category["customer_problem"]
+                })
+        
+        # If no valid categories found, create a default one
+        if not simplified_categories:
+            simplified_categories = {}        
+        # Prepare list of existing categories for the prompt
+        categories_list = "\n".join([
+            f"{i+1}. Key Area: '{cat['key_area']}', Customer Problem: '{cat['customer_problem']}'"
+            for i, cat in enumerate(simplified_categories)
+        ])
+        prompt = f"""
+        # Customer Review Classification Task
+
+        ## Your Objective
+        Analyze the provided customer review and either:
+            1. Match it to an existing category if there's a good thematic fit (80%+ similarity)
+            2. Create a new category if the review doesn't clearly match any existing category
+
+        In both cases, provide:
+            - `key_area`: A short (2-4 word) label identifying the general functional area
+            - `customer_problem`: Concise summary of the specific issue (5-8 words)
+            
+        ## Classification Instructions
+        CAREFULLY CONSIDER:
+            1. ONLY match to an existing category when there's a CLEAR thematic match (the review discusses the same type of issue)
+            2. CREATE A NEW CATEGORY when:
+                - The review addresses a different functional area than existing categories
+                - The review describes a different type of problem within a similar area
+                - The review contains a substantially different complaint or suggestion
+
+        ## Understanding the Database Structure
+        The feedback database has these key fields in each row:
+        - `key_area`: A short (2-4 word) label identifying the general topic area
+        - `customer_problem`: Summary of the issue based on the EXACT REVIEW TEXT (upto 5-8 words)
+        
+        These two fields MUST ALWAYS BE PAIRED TOGETHER exactly as they appear in the existing categories.
+
+        ## Existing Categories
+        These are the EXACT `key_area` and `customer_problem` pairs currently in our database:
+        {categories_list}
+
+        ## Customer Review to Classify
+        "{review_text}"
+
+        ## Classification Instructions
+        1. PRIORITIZE matching to an EXISTING category - this is CRITICAL for database consistency
+        2. Look for thematic matches between the review content and the existing categories
+        3. When you find a match, you MUST use BOTH the exact `key_area` AND `customer_problem` from that category (copy-paste exactly)
+        4. Only create a new category if the review is unrelated to ALL existing categories
+        
+
+        ## IMPORTANT REQUIREMENTS
+        1. Your response MUST be a valid JSON object with EXACTLY these two fields:
+           - key_area: The category name (preferably from existing categories)
+           - customer_problem: The problem description (preferably from existing categories)
+        2. DO NOT include any explanation, notes, or additional text
+        3. DO NOT add any extra fields to the JSON
+        4. COPY EXACT category names and descriptions when using existing categories
+
+        ## EXAMPLES of Classification Decisions
+
+        ### EXAMPLE 1: Correct Match to Existing Category
+        Review: "The app crashes every time I try to upload a photo of my receipt."
+        Correct Classification: Match to "Mobile App Performance"
+        {{{{
+            "key_area": "Mobile App Performance",
+            "customer_problem": "App crashes during specific operations"
+        }}}}
+        Reasoning: The review specifically mentions app crashes during a specific operation, which directly matches the existing category.
+
+        ### EXAMPLE 2: Correct Match to Existing Category 
+        Review: "Your website loads really slowly on my browser and sometimes times out."
+        Correct Classification: Match to "Website Performance"
+        {{{{
+            "key_area": "Website Performance",
+            "customer_problem": "Slow loading times and timeouts"
+        }}}}
+        Reasoning: The review is about website loading performance issues, exactly matching the existing category.
+
+        ### EXAMPLE 3: App Performance Issues
+        Review: "The mobile app keeps crashing when I try to book a class and doesn't work on my tablet."
+        Correct Classification:
+        {{{{
+            "key_area": "Mobile App Performance",
+            "customer_problem": "App crashes and device compatibility issues"
+        }}}}
+        Reasoning: This is about software functionality (crashes) and device compatibility, not physical equipment.
+
+        ### EXAMPLE 4: UI/UX Design Issues
+        Review: "The buttons in the app are too small and the checkout process requires too many steps."
+        Correct Classification:
+        {{{{
+            "key_area": "App Interface Design",
+            "customer_problem": "User interface is difficult to navigate and use"
+        }}}}
+        Reasoning: This refers to the app's interface design and usability, which is a distinct category from performance issues.
+
+        ### EXAMPLE 5: Tablet-Specific Issues
+        Review: "The app doesn't support landscape mode on tablets and the text is cut off on my 10-inch screen."
+        Correct Classification:
+        {{{{
+            "key_area": "App Device Compatibility",
+            "customer_problem": "App display issues on tablet screens"
+        }}}}
+        Reasoning: This specifically describes rendering issues on tablet devices, which is a specialized compatibility problem.
+
+        ### EXAMPLE 6: Website vs Mobile App Distinction
+        Review: "The website lets me book classes easily but the same features don't work in the mobile app."
+        Correct Classification:
+        {{{{
+            "key_area": "Cross-Platform Consistency",
+            "customer_problem": "Features available on website missing from mobile app"
+        }}}}
+        Reasoning: This highlights inconsistencies between different digital platforms rather than a general app issue.
+        ## Response Format (STRICTLY FOLLOW THIS)
+        ```json
+        {{
+            "key_area": "Exact category name",
+            "customer_problem": "Describe the problem in 5 words or less"
+        }}
+        ```
+        """
+        
+        # Store the original raw response for fallback
+        raw_response = None
+        
+        # Retry mechanism - attempt up to 5 times to get valid JSON
+        max_retries = 5
+        for attempt in range(max_retries):
+            try:
+                logger.info(f"GPT classification attempt {attempt+1}/{max_retries}")
+                
+                response = AZURE_CLIENT.chat.completions.create(
+                    model="gpt-4.1",
+                    messages=[
+                        {"role": "system", "content": "You are a customer feedback classification specialist who always responds with valid JSON. The json must contain key_area (headline of the issue) and customer_problem (bried 7-8 word summary of the user problem)."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.1,
+                    response_format={"type": "json_object"}
+                )
+                
+                result_text = response.choices[0].message.content
+                print(result_text)
+                raw_response = result_text  # Store the raw response
+                # Try to parse as JSON
+                try:
+                    result = json.loads(result_text)
+                    
+                    # Validate that the response contains the required fields
+                    if "key_area" in result and "customer_problem" in result:
+                        # Check if this matches an existing category
+                        is_existing_pair = False
+                        for cat in simplified_categories:
+                            if (cat["key_area"] == result["key_area"] and 
+                                cat["customer_problem"] == result["customer_problem"]):
+                                is_existing_pair = True
+                                break
+                        
+                        logger.info(f"Classification result: {result['key_area']} (existing pair: {is_existing_pair})")
+                        return JSONResponse(content={
+                            "key_area": result["key_area"],
+                            "customer_problem": result["customer_problem"]
+                        })
+                    else:
+                        logger.warning(f"GPT response missing required fields: {result}")
+                        # Continue to next attempt
+                except json.JSONDecodeError as json_err:
+                    logger.warning(f"Invalid JSON on attempt {attempt+1}: {json_err}. Response: {result_text[:200]}...")
+                    # Continue to next attempt
+                    
+            except Exception as e:
+                logger.error(f"Error on attempt {attempt+1}: {str(e)}")
+                # Continue to next attempt
+            
+            # Add slight delay between retries
+            await asyncio.sleep(1)
+        
+        # If all attempts failed, try to extract from the raw response
+        logger.warning("All GPT attempts failed, using fallback extraction")
+        
+        # Try to extract structured data from the raw response
+        result = extract_classification_from_text(raw_response, simplified_categories, original_json_data)
+        
+        logger.info(f"Fallback classification result: {result}")
+        return JSONResponse(content=result)
+        
+    except Exception as e:
+        logger.error(f"Error classifying single review: {str(e)}\n{traceback.format_exc()}")
+        # Ultimate fallback - return a generic classification
+        return JSONResponse(content={
+            "key_area": "Miscellaneous Issue",
+            "customer_problem": "Issues related to miscellaneous customer concerns"
+        })
+
+def extract_classification_from_text(text: str, existing_categories: List[Dict[str, str]], original_json: str = "[]") -> Dict[str, str]:
+    """
+    Fallback method to extract key_area and customer_problem from GPT response when JSON parsing fails.
+    
+    Args:
+        text: Raw text response from GPT
+        existing_categories: List of existing categories
+        original_json: Original JSON input string
+        
+    Returns:
+        Dictionary with key_area and customer_problem
+    """
+    # If no text provided, try to extract from original JSON or use default
+    if not text or not text.strip():
+        logger.warning("Empty response from GPT, attempting to use original data")
+        try:
+            # Try to extract from original JSON first
+            if original_json and original_json.strip() not in ('[]', '{}', ''):
+                try:
+                    json_data = json.loads(original_json)
+                    if isinstance(json_data, list) and len(json_data) > 0:
+                        if "key_area" in json_data[0] and "customer_problem" in json_data[0]:
+                            logger.info("Using first category from original JSON as fallback")
+                            return {
+                                "key_area": json_data[0]["key_area"],
+                                "customer_problem": json_data[0]["customer_problem"]
+                            }
+                except:
+                    pass
+            
+            # If original JSON parsing fails or is empty, use the first existing category
+            if existing_categories:
+                return existing_categories[0]
+        except:
+            pass
+        
+        # Final fallback
+        return {
+            "key_area": "Miscellaneous Issue",
+            "customer_problem": "Issues related to miscellaneous customer concerns"
+        }
+    
+    try:
+        # Multi-tiered parsing approach
+        
+        # 1. Try with the raw text as is
+        try:
+            raw_json = json.loads(text)
+            if "key_area" in raw_json and "customer_problem" in raw_json:
+                return {
+                    "key_area": raw_json["key_area"],
+                    "customer_problem": raw_json["customer_problem"]
+                }
+        except:
+            pass
+        
+        # 2. Clean and try again
+        cleaned_text = text.strip()
+        # Remove markdown code block markers and extra spaces
+        cleaned_text = re.sub(r'```json|```|`', '', cleaned_text).strip()
+        try:
+            cleaned_json = json.loads(cleaned_text)
+            if "key_area" in cleaned_json and "customer_problem" in cleaned_json:
+                return {
+                    "key_area": cleaned_json["key_area"],
+                    "customer_problem": cleaned_json["customer_problem"]
+                }
+        except:
+            pass
+        
+        # 3. Try to extract any JSON-like content
+        json_pattern = r'\{[^{}]*\}'
+        json_matches = re.findall(json_pattern, cleaned_text)
+        
+        if json_matches:
+            for json_str in json_matches:
+                try:
+                    # Try to parse this JSON fragment
+                    result = json.loads(json_str)
+                    if "key_area" in result and "customer_problem" in result:
+                        # Check if this is an existing pair
+                        for cat in existing_categories:
+                            if (cat["key_area"] == result["key_area"] and 
+                                cat["customer_problem"] == result["customer_problem"]):
+                                return cat
+                        # If not an exact match, still return the extracted pair
+                        return {
+                            "key_area": result["key_area"],
+                            "customer_problem": result["customer_problem"]
+                        }
+                except:
+                    continue
+        
+        # 4. Try to extract key_area and customer_problem from text using regex
+        key_area_pattern = r'"key_area"\s*:\s*"([^"]+)"'
+        problem_pattern = r'"customer_problem"\s*:\s*"([^"]+)"'
+        
+        key_area_match = re.search(key_area_pattern, cleaned_text)
+        problem_match = re.search(problem_pattern, cleaned_text)
+        
+        if key_area_match and problem_match:
+            key_area = key_area_match.group(1)
+            customer_problem = problem_match.group(1)
+            
+            # Check if this is an existing pair
+            for cat in existing_categories:
+                if (cat["key_area"] == key_area and cat["customer_problem"] == customer_problem):
+                    return cat
+            
+            # If not an exact match, return the extracted values
+            return {
+                "key_area": key_area,
+                "customer_problem": customer_problem
+            }
+        
+        # 5. Look for exact matches with existing categories in the text
+        for category in existing_categories:
+            # If both key_area and customer_problem appear in the text, prioritize that match
+            if category["key_area"] in cleaned_text and category["customer_problem"] in cleaned_text:
+                logger.info(f"Found exact category match in text: {category['key_area']}")
+                return category
+        
+        # 6. Look for partial matches with existing categories
+        for category in existing_categories:
+            # Look for substantial parts of the customer_problem in the text
+            problem_parts = category["customer_problem"].split()
+            if len(problem_parts) >= 3:
+                # Check if at least 3 consecutive words from the problem appear in the text
+                for i in range(len(problem_parts) - 2):
+                    phrase = " ".join(problem_parts[i:i+3])
+                    if phrase.lower() in cleaned_text.lower():
+                        logger.info(f"Found partial match on customer problem: {category['key_area']}")
+                        return category
+        
+        # 7. Check for key_area matches
+        for category in existing_categories:
+            if category["key_area"].lower() in cleaned_text.lower():
+                logger.info(f"Found key_area match: {category['key_area']}")
+                return category
+        
+        # 8. If all else fails, try to return raw JSON as last resort
+        try:
+            # If text looks like JSON but doesn't have the expected fields
+            if text.strip().startswith('{') and text.strip().endswith('}'):
+                raw_json_attempt = json.loads(text.strip())
+                # If it's valid JSON with any fields, add the required fields with defaults
+                if isinstance(raw_json_attempt, dict):
+                    result = {
+                        "key_area": raw_json_attempt.get("key_area", "Miscellaneous Issue"),
+                        "customer_problem": raw_json_attempt.get("customer_problem", "General customer feedback")
+                    }
+                    return result
+        except:
+            pass
+        
+        # 9. Final fallback - return first category
+        if existing_categories:
+            logger.info("Using first existing category as final fallback")
+            return existing_categories[0]
+        
+        # 10. Absolute last resort
+        return {
+            "key_area": "Miscellaneous Issue",
+            "customer_problem": "Issues related to miscellaneous customer concerns"
+        }
+    
+    except Exception as e:
+        logger.error(f"Error in fallback extraction: {str(e)}")
+        # Return the original JSON if all else fails
+        try:
+            if original_json and original_json not in ('[]', '{}', ''):
+                json_data = json.loads(original_json)
+                if isinstance(json_data, list) and len(json_data) > 0:
+                    return {
+                        "key_area": json_data[0].get("key_area", "Miscellaneous Issue"),
+                        "customer_problem": json_data[0].get("customer_problem", "General customer feedback")
+                    }
+        except:
+            pass
+            
+        # Absolute final fallback
+        return {
+            "key_area": "Miscellaneous Issue",
+            "customer_problem": "Issues related to miscellaneous customer concerns"
+        }
 # Main function for running as standalone server
 if __name__ == "__main__":
     import uvicorn
