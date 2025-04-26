@@ -1591,7 +1591,7 @@ async def process_csv_data(
                     enriched_feedback[area].append({"text": feedback_text})
         
         # Replace classified_feedback with enriched version
-classified_feedback = enriched_feedback
+        classified_feedback = enriched_feedback
 
         return {
             "key_areas": key_areas,  # Now returning the full dictionary structure
