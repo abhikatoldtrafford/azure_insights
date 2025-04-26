@@ -172,11 +172,11 @@ async def process_excel_data(
                                 feedback_text = str(row[feedback_col])
                                 if rating_col and rating_col in df.columns and pd.notna(row[rating_col]):
                                     feedback_text = f"[Rating: {row[rating_col]}] {feedback_text}"
-                                
+                                row_dict = row.replace([float('nan'), float('inf'), float('-inf')], -1).to_dict()
                                 all_feedback_items.append({
                                     "text": feedback_text,
                                     "original_index": idx,
-                                    "original_row": row.to_dict(),
+                                    "original_row": row_dict,
                                     "sheet_name": sheet_name  # Add sheet name for reference
                                 })
                     else:
@@ -1137,6 +1137,15 @@ async def analyze_raw_data_chunks(
         
         logger.info(f"Classified {len(all_feedbacks)} feedback items into {len(final_areas)} areas")
         text_to_item = {item["text"]: item for item in all_feedbacks}
+        def clean_json_values(obj):
+            if isinstance(obj, dict):
+                return {k: clean_json_values(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [clean_json_values(i) for i in obj]
+            elif isinstance(obj, float) and (np.isnan(obj) or np.isinf(obj)):
+                return -1
+            else:
+                return obj
         enriched_feedback = {}
         
         for area, feedbacks in classified_feedback.items():
@@ -1145,7 +1154,9 @@ async def analyze_raw_data_chunks(
                 if feedback_text in text_to_item:
                     # Include original row data
                     original_item = text_to_item[feedback_text]
-                    enriched_feedback[area].append(original_item.get("original_row", {"text": feedback_text}))
+                    original_row = original_item.get("original_row", {"text": feedback_text})
+                    original_row = clean_json_values(original_row)
+                    enriched_feedback[area].append(original_row)
                 else:
                     # Fallback if text not found in mapping
                     enriched_feedback[area].append({"text": feedback_text})
@@ -1243,11 +1254,11 @@ async def process_csv_data(
                     feedback_text = str(row[feedback_col])
                     if pd.notna(row[rating_col]):
                         feedback_text = f"[Rating: {row[rating_col]}] {feedback_text}"
-                    
+                    row_dict = row.replace([float('nan'), float('inf'), float('-inf')], -1).to_dict()
                     feedback_items.append({
                         "text": feedback_text,
                         "original_index": idx,
-                        "original_row": row.to_dict()
+                        "original_row": row_dict
                     })
             else:
                 valid_rows = df[df[feedback_col].notna() & (df[feedback_col].astype(str).str.strip() != "")]
