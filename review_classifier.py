@@ -369,7 +369,23 @@ async def process_excel_data(
         logger.info("Classification results:")
         for area, feedbacks in classified_feedback.items():
             logger.info(f"  - {area}: {len(feedbacks)} items")
+        text_to_item = {item["text"]: item for item in all_feedback_items}
+        enriched_feedback = {}
         
+        for area, feedbacks in classified_feedback.items():
+            enriched_feedback[area] = []
+            for feedback_text in feedbacks:
+                if feedback_text in text_to_item:
+                    # Include original row data
+                    original_item = text_to_item[feedback_text]
+                    enriched_feedback[area].append(original_item.get("original_row", {"text": feedback_text}))
+                else:
+                    # Fallback if text not found in mapping
+                    enriched_feedback[area].append({"text": feedback_text})
+        
+        # Replace classified_feedback with enriched version
+        classified_feedback = enriched_feedback
+
         return {
             "key_areas": key_areas,  # Now returning the full dictionary structure
             "classified_feedback": classified_feedback
@@ -1120,7 +1136,22 @@ async def analyze_raw_data_chunks(
                     classified_feedback[area].append(feedback_texts[i])
         
         logger.info(f"Classified {len(all_feedbacks)} feedback items into {len(final_areas)} areas")
+        text_to_item = {item["text"]: item for item in all_feedbacks}
+        enriched_feedback = {}
         
+        for area, feedbacks in classified_feedback.items():
+            enriched_feedback[area] = []
+            for feedback_text in feedbacks:
+                if feedback_text in text_to_item:
+                    # Include original row data
+                    original_item = text_to_item[feedback_text]
+                    enriched_feedback[area].append(original_item.get("original_row", {"text": feedback_text}))
+                else:
+                    # Fallback if text not found in mapping
+                    enriched_feedback[area].append({"text": feedback_text})
+        
+        # Replace classified_feedback with enriched version
+        classified_feedback = enriched_feedback
         return {
             "key_areas": final_areas,  # Return the full dictionary structure
             "classified_feedback": classified_feedback
@@ -1545,7 +1576,23 @@ async def process_csv_data(
         logger.info("Classification results:")
         for area, feedbacks in classified_feedback.items():
             logger.info(f"  - {area}: {len(feedbacks)} items")
+        text_to_item = {item["text"]: item for item in all_feedback_items}
+        enriched_feedback = {}
         
+        for area, feedbacks in classified_feedback.items():
+            enriched_feedback[area] = []
+            for feedback_text in feedbacks:
+                if feedback_text in text_to_item:
+                    # Include original row data
+                    original_item = text_to_item[feedback_text]
+                    enriched_feedback[area].append(original_item.get("original_row", {"text": feedback_text}))
+                else:
+                    # Fallback if text not found in mapping
+                    enriched_feedback[area].append({"text": feedback_text})
+        
+        # Replace classified_feedback with enriched version
+classified_feedback = enriched_feedback
+
         return {
             "key_areas": key_areas,  # Now returning the full dictionary structure
             "classified_feedback": classified_feedback
