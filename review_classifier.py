@@ -3,8 +3,9 @@ import os
 import json
 import numpy as np
 import pandas as pd
+from functools import wraps
 from typing import Dict, List, Any, Optional, Tuple, Union
-from fastapi import FastAPI, APIRouter, UploadFile, File, HTTPException, Form, Request
+from fastapi import FastAPI, APIRouter, UploadFile, File, HTTPException, Form, Request, status
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import traceback
@@ -14,7 +15,20 @@ from io import StringIO
 import tempfile
 from openai import AzureOpenAI
 from fuzzywuzzy import process
-
+def async_timeout(seconds):
+    def decorator(func):
+        @wraps(func)
+        async def wrapper(*args, **kwargs):
+            try:
+                return await asyncio.wait_for(func(*args, **kwargs), timeout=seconds)
+            except asyncio.TimeoutError:
+                logging.error(f"Function {func.__name__} timed out after {seconds} seconds")
+                raise HTTPException(
+                    status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+                    detail=f"Request timed out after {seconds} seconds"
+                )
+        return wrapper
+    return decorator
 # Configure detailed logging for development
 logging.basicConfig(
     level=logging.INFO,
@@ -55,7 +69,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
+@app.middleware("http")
+async def timeout_middleware(request: Request, call_next):
+    try:
+        return await asyncio.wait_for(call_next(request), timeout=120)
+    except asyncio.TimeoutError:
+        return JSONResponse(
+            status_code=504,
+            content={"detail": "Request timed out after 120 seconds"}
+        )
 # Router is kept for optional integration scenarios
 router = APIRouter()
 
@@ -1196,7 +1218,7 @@ async def process_csv_data(
     slow_mode: bool = False
 ) -> Dict[str, Any]:
     """
-    Process structured CSV data to extract and classify feedback.
+    Process structured CSV data to extract and classify feedback - optimized version.
     
     Args:
         client: Azure OpenAI client
@@ -1215,29 +1237,20 @@ async def process_csv_data(
             
         logger.info(f"Parsed CSV with {len(df)} rows and {len(df.columns)} columns")
         
-        # Use OpenAI to identify relevant columns
-        columns = await identify_relevant_columns(AZURE_CLIENT, df)
+        # Use identify_relevant_columns to find feedback and rating columns
+        columns = await identify_relevant_columns(client, df)
         feedback_col = columns.get("feedback_col")
         rating_col = columns.get("rating_col")
         
         logger.info(f"Using columns: feedback={feedback_col}, rating={rating_col}")
         
         # Extract feedback items, handling NaN values
+        all_feedback_items = []
         if feedback_col and feedback_col in df.columns:
             # Skip 5-star reviews if rating column exists
             if rating_col and rating_col in df.columns:
-                # Convert ratings to numeric if possible
                 try:
                     df[rating_col] = pd.to_numeric(df[rating_col], errors='coerce')
-                except:
-                    logger.warning(f"Could not convert ratings to numeric in column {rating_col}")
-                
-                # Count reviews by rating for logging
-                rating_counts = df[rating_col].value_counts().to_dict()
-                logger.info(f"Rating distribution: {rating_counts}")
-                
-                # Filter out 5-star reviews
-                try:
                     high_rating_mask = df[rating_col] >= 5
                     five_star_count = high_rating_mask.sum()
                     logger.info(f"Skipping {five_star_count} high-rated reviews (5-star)")
@@ -1245,37 +1258,24 @@ async def process_csv_data(
                 except:
                     logger.warning("Could not filter out 5-star reviews, processing all")
             
-            # Extract feedback items - vectorized with pandas instead of row iteration
-            # For clean feedback extraction
-            feedback_items = []
-            if rating_col and rating_col in df.columns:
-                valid_rows = df[df[feedback_col].notna() & (df[feedback_col].astype(str).str.strip() != "")]
-                for idx, row in valid_rows.iterrows():
-                    feedback_text = str(row[feedback_col])
-                    if pd.notna(row[rating_col]):
-                        feedback_text = f"[Rating: {row[rating_col]}] {feedback_text}"
-                    row_dict = row.replace([float('nan'), float('inf'), float('-inf')], -1).to_dict()
-                    feedback_items.append({
-                        "text": feedback_text,
-                        "original_index": idx,
-                        "original_row": row_dict
-                    })
-            else:
-                valid_rows = df[df[feedback_col].notna() & (df[feedback_col].astype(str).str.strip() != "")]
-                feedback_items = [
-                    {
-                        "text": str(row[feedback_col]),
-                        "original_index": idx,
-                        "original_row": row.to_dict()
-                    }
-                    for idx, row in valid_rows.iterrows()
-                ]
+            # Extract feedback with ratings - vectorized approach
+            valid_rows = df[df[feedback_col].notna() & (df[feedback_col].astype(str).str.strip() != "")]
+            for idx, row in valid_rows.iterrows():
+                feedback_text = str(row[feedback_col])
+                if rating_col and rating_col in df.columns and pd.notna(row[rating_col]):
+                    feedback_text = f"[Rating: {row[rating_col]}] {feedback_text}"
+                row_dict = row.replace([float('nan'), float('inf'), float('-inf')], -1).to_dict()
+                all_feedback_items.append({
+                    "text": feedback_text,
+                    "original_index": idx,
+                    "original_row": row_dict
+                })
         else:
             # If no feedback column identified, use the first text column
             for col in df.columns:
                 if df[col].dtype == 'object':
                     valid_rows = df[df[col].notna() & (df[col].astype(str).str.strip() != "")]
-                    feedback_items = [
+                    all_feedback_items = [
                         {
                             "text": str(row[col]),
                             "original_index": idx,
@@ -1285,70 +1285,58 @@ async def process_csv_data(
                     ]
                     break
         
-        if not feedback_items:
-            raise ValueError("No valid feedback found in the data")
+        if not all_feedback_items:
+            raise ValueError("No valid feedback found in the CSV data")
             
-        logger.info(f"Extracted {len(feedback_items)} feedback items")
+        logger.info(f"Extracted {len(all_feedback_items)} feedback items")
             
-        # Sample for key area identification (using same logic as Excel processing)
-        sample_feedbacks = [item["text"] for item in feedback_items[:min(1000, len(feedback_items) // 2)]]
+        # Sample for key area identification (limit to 100 items to avoid token limits)
+        sample_feedbacks = [item["text"] for item in all_feedback_items[:min(1000, len(all_feedback_items) // 2)]]
         sample_feedback_text = '\n'.join(sample_feedbacks)
         
-        if slow_mode:
-            # Original sequential implementation
-            # Identify key areas
-            key_areas = await identify_key_areas(AZURE_CLIENT, sample_feedback_text)
-        else:
-            # Optimized parallel implementation - run identification tasks concurrently
-            # This runs key area identification in parallel with other initialization tasks
-            key_area_task = asyncio.create_task(identify_key_areas(AZURE_CLIENT, sample_feedback_text))
-            
-            # Continue with other initialization while key areas are being identified
-            # ...Now get the key areas result when needed
-            key_areas = await key_area_task
+        # Identify key areas in parallel with other initialization
+        key_area_task = asyncio.create_task(identify_key_areas(client, sample_feedback_text))
         
+        # Process feedback in batches for embedding - we'll start this while key areas are being identified
+        feedback_texts = [item["text"] for item in all_feedback_items]
+        
+        # Get key areas from the parallel task
+        key_areas = await key_area_task
         logger.info(f"Identified {len(key_areas)} key areas")
         
-        # IMPORTANT: No conversion from dict to string here, preserve the full structure
         # Initialize result structure with empty lists - use the area name as key
         classified_feedback = {area.get('area', f"Area {i+1}"): [] for i, area in enumerate(key_areas)}
         
-        # Use embeddings for classification with optimized processing
+        # Use embeddings for classification
         try:
-            logger.info("Using embeddings for fast feedback classification")
+            logger.info("Using embeddings for feedback classification")
             
-            # Create a list of problem texts and area names
+            # Create a list of just the area names for embeddings
             problem_texts = [area.get('problem', f"Problem {i+1}") for i, area in enumerate(key_areas)]
+            key_area_embeddings_task = asyncio.create_task(get_embeddings(client, problem_texts))
             area_names = [area.get('area', f"Area {i+1}") for i, area in enumerate(key_areas)]
             
-            if slow_mode:
-                # Original sequential implementation
-                # Use problem texts for embeddings (like Excel version)
-                key_area_embeddings = await get_embeddings(AZURE_CLIENT, problem_texts, slow_mode=True)
-                
-                # Process feedback in batches for embedding
-                feedback_texts = [item["text"] for item in feedback_items]
-                all_feedback_embeddings = []
-                
-                for i in range(0, len(feedback_texts), 300):
-                    batch = feedback_texts[i:i + 300]
-                    logger.info(f"Generating embeddings for feedback batch {i//300 + 1}/{(len(feedback_texts) + 300 - 1)//300}")
-                    batch_embeddings = await get_embeddings(AZURE_CLIENT, batch, slow_mode=True)
-                    all_feedback_embeddings.extend(batch_embeddings)
-            else:
-                # Optimized parallel implementation
-                # Run both embedding generations in parallel using asyncio.gather()
-                feedback_texts = [item["text"] for item in feedback_items]
-                logger.info(f"Generating embeddings for {len(problem_texts)} key areas and {len(feedback_texts)} feedback items in parallel")
-                
-                # Use problem_texts for embeddings instead of area_names
-                key_area_task = asyncio.create_task(get_embeddings(AZURE_CLIENT, problem_texts))
-                feedback_task = asyncio.create_task(get_embeddings(AZURE_CLIENT, feedback_texts))
-                
-                # Wait for both tasks to complete
-                key_area_embeddings, all_feedback_embeddings = await asyncio.gather(key_area_task, feedback_task)
+            # Process feedback in batches for embedding - parallelize with area embeddings
+            batch_size = 300
+            feedback_embeddings_tasks = []
             
-            # Convert to numpy arrays for vectorized operations
+            for i in range(0, len(feedback_texts), batch_size):
+                batch = feedback_texts[i:i + batch_size]
+                logger.info(f"Generating embeddings for feedback batch {i//batch_size + 1}/{(len(feedback_texts) + batch_size - 1)//batch_size}")
+                task = asyncio.create_task(get_embeddings(client, batch))
+                feedback_embeddings_tasks.append(task)
+            
+            # Wait for all embedding tasks to complete
+            all_embedding_tasks = [key_area_embeddings_task] + feedback_embeddings_tasks
+            embedding_results = await asyncio.gather(*all_embedding_tasks)
+            
+            # First result is key area embeddings, rest are feedback embedding batches
+            key_area_embeddings = embedding_results[0]
+            all_feedback_embeddings = []
+            for result in embedding_results[1:]:
+                all_feedback_embeddings.extend(result)
+            
+            # Calculate similarity and classify using numpy - vectorized operations
             key_area_matrix = np.array(key_area_embeddings)
             feedback_matrix = np.array(all_feedback_embeddings)
             
@@ -1361,46 +1349,30 @@ async def process_csv_data(
                 logger.error(f"Embedding dimensions mismatch: key_areas({key_area_dim}) != feedback({feedback_dim})")
                 raise ValueError(f"Embedding dimensions don't match: {key_area_dim} vs {feedback_dim}")
             
-            # Calculate similarity with vectorized operations
-            similarity_matrix = cosine_similarity_batch(feedback_matrix, key_area_matrix, slow_mode=slow_mode)
+            # Calculate similarity with optimized matrix operations
+            A_norm = feedback_matrix / np.linalg.norm(feedback_matrix, axis=1, keepdims=True)
+            B_norm = key_area_matrix / np.linalg.norm(key_area_matrix, axis=1, keepdims=True)
+            similarity_matrix = np.dot(A_norm, B_norm.T)
             
-            # Use same similarity threshold as Excel version (0.3)
+            # Classify feedback based on similarity
             similarity_threshold = 0.7
             
-            # Vectorized classification where possible
-            if not slow_mode:
-                # Use numpy operations for fast classification
-                matches = similarity_matrix > similarity_threshold
-                
-                # If a row has no matches, use the best match
-                no_matches = ~np.any(matches, axis=1)
-                if np.any(no_matches):
-                    best_matches = np.argmax(similarity_matrix[no_matches], axis=1)
-                    for i, row_idx in enumerate(np.where(no_matches)[0]):
-                        matches[row_idx, best_matches[i]] = True
-                
-                # Add feedback to matching areas - use area names as keys
-                for i in range(matches.shape[0]):
-                    for j in np.where(matches[i])[0]:
-                        if j < len(area_names):
-                            area = area_names[j]
-                            classified_feedback[area].append(feedback_texts[i])
-            else:
-                # Original non-vectorized implementation
-                for i, similarities in enumerate(similarity_matrix):
-                    # Get indices where similarity exceeds threshold
-                    matches = np.where(similarities > similarity_threshold)[0]
-                    
-                    # If no matches, use the best match
-                    if len(matches) == 0:
-                        best_match = np.argmax(similarities)
-                        matches = [best_match]
-                    
-                    # Add feedback to all matching areas - use area names as keys
-                    for match_idx in matches:
-                        if match_idx < len(area_names):
-                            area = area_names[match_idx]
-                            classified_feedback[area].append(feedback_texts[i])
+            # Vectorized matching - much faster than looping
+            matches = similarity_matrix > similarity_threshold
+            
+            # For rows with no matches, use the best match
+            no_matches = ~np.any(matches, axis=1)
+            if np.any(no_matches):
+                best_matches = np.argmax(similarity_matrix[no_matches], axis=1)
+                for i, row_idx in enumerate(np.where(no_matches)[0]):
+                    matches[row_idx, best_matches[i]] = True
+            
+            # Add feedback to matching areas using the matches matrix
+            for i in range(matches.shape[0]):
+                for j in np.where(matches[i])[0]:
+                    if j < len(area_names):
+                        area = area_names[j]
+                        classified_feedback[area].append(feedback_texts[i])
             
             logger.info(f"Successfully classified {len(all_feedback_embeddings)} feedback items using embeddings")
             
@@ -1408,14 +1380,15 @@ async def process_csv_data(
             logger.error(f"Error with embedding classification: {str(e)}")
             logger.info("Falling back to direct OpenAI classification")
             
-            # Fall back to direct OpenAI classification
+            # Fall back to chunked classification via OpenAI
             chunk_size = 10
             
-            if slow_mode:
-                # Original sequential implementation
-                for i in range(0, len(feedback_items), chunk_size):
-                    logger.info(f"Processing feedback chunk {i//chunk_size + 1}/{(len(feedback_items) + chunk_size - 1)//chunk_size}")
-                    chunk = feedback_items[i:i + min(chunk_size, len(feedback_items) - i)]
+            # Using semaphore to limit concurrent API calls
+            semaphore = asyncio.Semaphore(3)  # Limit to 3 concurrent API calls
+            
+            async def process_chunk(chunk_idx, chunk):
+                async with semaphore:
+                    logger.info(f"Processing feedback chunk {chunk_idx + 1}/{(len(all_feedback_items) + chunk_size - 1)//chunk_size}")
                     
                     chunk_texts = [item["text"] for item in chunk]
                     
@@ -1459,6 +1432,7 @@ async def process_csv_data(
                         )
                         
                         result = json.loads(response.choices[0].message.content)
+                        classifications = []
                         
                         # Process classifications
                         if "classifications" in result:
@@ -1469,124 +1443,46 @@ async def process_csv_data(
                                 if feedback_idx < len(chunk_texts):
                                     feedback_text = chunk_texts[feedback_idx]
                                     
-                                    # If no categories matched, assign to first category
                                     if not category_indices and key_areas:
                                         first_area = key_areas[0].get('area', 'Area 1')
-                                        classified_feedback[first_area].append(feedback_text)
+                                        classifications.append((first_area, feedback_text))
                                     else:
-                                        # Add to all matching categories
                                         for cat_idx in category_indices:
                                             if 0 <= cat_idx < len(key_areas):
                                                 area = key_areas[cat_idx].get('area', f'Area {cat_idx+1}')
-                                                classified_feedback[area].append(feedback_text)
+                                                classifications.append((area, feedback_text))
+                        return classifications
                     
                     except Exception as chunk_error:
-                        logger.error(f"Error processing chunk {i//chunk_size + 1}: {str(chunk_error)}")
+                        logger.error(f"Error processing chunk {chunk_idx + 1}: {str(chunk_error)}")
                         # Assign all feedbacks in this chunk to the first category as fallback
                         if key_areas:
                             first_area = key_areas[0].get('area', 'Area 1')
-                            classified_feedback[first_area].extend(chunk_texts)
-                    
-                    # Avoid rate limits
-                    await asyncio.sleep(0.5)
-            else:
-                # Optimized parallel implementation - process chunks in parallel with rate limiting
-                chunks = []
-                for i in range(0, len(feedback_items), chunk_size):
-                    chunk = feedback_items[i:i + min(chunk_size, len(feedback_items) - i)]
-                    chunks.append(chunk)
-                
-                # Create a semaphore to limit concurrent API calls (avoid rate limits)
-                semaphore = asyncio.Semaphore(3)  # Allow 3 concurrent API calls
-                
-                async def process_chunk(chunk_idx, chunk):
-                    async with semaphore:
-                        logger.info(f"Processing feedback chunk {chunk_idx + 1}/{len(chunks)}")
-                        chunk_texts = [item["text"] for item in chunk]
-                        
-                        # Create prompt and classify
-                        areas_text = "\n".join([f"{j+1}. {area.get('area', f'Area {j+1}')}" for j, area in enumerate(key_areas)])
-                        feedback_text = "\n".join([f"Feedback {j+1}: {text}" for j, text in enumerate(chunk_texts)])
-                        
-                        prompt = f"""
-                        I need to classify these customer feedback items into the most relevant categories.
-                        
-                        CATEGORIES:
-                        {areas_text}
-                        
-                        FEEDBACK ITEMS:
-                        {feedback_text}
-                        
-                        For each feedback item, tell me which categories it belongs to (multiple categories allowed).
-                        Format as JSON:
-                        {{
-                            "classifications": [
-                                {{
-                                    "feedback_index": 0,
-                                    "category_indices": [0, 2]
-                                }},
-                                ...
-                            ]
-                        }}
-                        
-                        Category indices are 0-based, corresponding to the numbered list above.
-                        """
-                        
-                        try:
-                            response = client.chat.completions.create(
-                                model="gpt-4.1-mini",
-                                messages=[
-                                    {"role": "system", "content": "You are a customer feedback classification system."},
-                                    {"role": "user", "content": prompt}
-                                ],
-                                temperature=0.1,
-                                response_format={"type": "json_object"}
-                            )
-                            
-                            result = json.loads(response.choices[0].message.content)
-                            classifications = []
-                            
-                            # Process classifications
-                            if "classifications" in result:
-                                for classification in result["classifications"]:
-                                    feedback_idx = classification.get("feedback_index", 0)
-                                    category_indices = classification.get("category_indices", [])
-                                    
-                                    if feedback_idx < len(chunk_texts):
-                                        feedback_text = chunk_texts[feedback_idx]
-                                        
-                                        if not category_indices and key_areas:
-                                            first_area = key_areas[0].get('area', 'Area 1')
-                                            classifications.append((first_area, feedback_text))
-                                        else:
-                                            for cat_idx in category_indices:
-                                                if 0 <= cat_idx < len(key_areas):
-                                                    area = key_areas[cat_idx].get('area', f'Area {cat_idx+1}')
-                                                    classifications.append((area, feedback_text))
-                            return classifications
-                        
-                        except Exception as chunk_error:
-                            logger.error(f"Error processing chunk {chunk_idx + 1}: {str(chunk_error)}")
-                            # Assign all feedbacks in this chunk to the first category as fallback
-                            if key_areas:
-                                first_area = key_areas[0].get('area', 'Area 1')
-                                return [(first_area, text) for text in chunk_texts]
-                            return []
-                
-                # Process all chunks in parallel with rate limiting
-                chunk_results = await asyncio.gather(
-                    *[process_chunk(i, chunk) for i, chunk in enumerate(chunks)]
-                )
-                
-                # Add all classified feedback to the result
-                for classifications in chunk_results:
-                    for area, feedback_text in classifications:
-                        classified_feedback[area].append(feedback_text)
+                            return [(first_area, text) for text in chunk_texts]
+                        return []
+            
+            # Prepare chunks
+            chunks = []
+            for i in range(0, len(all_feedback_items), chunk_size):
+                chunk = all_feedback_items[i:i + min(chunk_size, len(all_feedback_items) - i)]
+                chunks.append(chunk)
+            
+            # Process all chunks in parallel with rate limiting
+            chunk_results = await asyncio.gather(
+                *[process_chunk(i, chunk) for i, chunk in enumerate(chunks)]
+            )
+            
+            # Add all classified feedback to the result
+            for classifications in chunk_results:
+                for area, feedback_text in classifications:
+                    classified_feedback[area].append(feedback_text)
         
         # Log classification stats
         logger.info("Classification results:")
         for area, feedbacks in classified_feedback.items():
             logger.info(f"  - {area}: {len(feedbacks)} items")
+        
+        # Map original data back to each feedback
         text_to_item = {item["text"]: item for item in all_feedback_items}
         enriched_feedback = {}
         
@@ -1605,7 +1501,7 @@ async def process_csv_data(
         classified_feedback = enriched_feedback
 
         return {
-            "key_areas": key_areas,  # Now returning the full dictionary structure
+            "key_areas": key_areas,  # Full dictionary structure
             "classified_feedback": classified_feedback
         }
         
@@ -1613,7 +1509,7 @@ async def process_csv_data(
         logger.error(f"Error processing CSV data: {str(e)}\n{traceback.format_exc()}")
         # Fall back to raw data processing
         logger.info("Falling back to raw data processing")
-        return await analyze_raw_data_chunks(AZURE_CLIENT, csv_data, slow_mode=slow_mode)
+        return await analyze_raw_data_chunks(client, csv_data)
 async def format_analysis_results(analysis_results: Dict[str, Any], return_raw_feedback: bool = False) -> Dict[str, Any]:
     """
     Format the analysis results into the final structure.
@@ -1668,6 +1564,7 @@ async def format_analysis_results(analysis_results: Dict[str, Any], return_raw_f
         }
     }
 @router.post("/analyze-feedback")
+@async_timeout(120) 
 async def analyze_feedback(
     file: UploadFile = File(...),
     return_raw_feedback: bool = Form(True)
@@ -1788,6 +1685,7 @@ def integrate_with_main_app(app):
 
 # Standalone app routes
 @app.post("/analyze-feedback")
+@async_timeout(120)
 async def standalone_analyze_feedback(
     file: UploadFile = File(...),
     return_raw_feedback: bool = Form(False)
