@@ -15,6 +15,8 @@ from io import StringIO
 import tempfile
 from openai import AzureOpenAI
 from fuzzywuzzy import process
+_positive_anchor_embedding = None
+_negative_anchor_embedding = None
 def async_timeout(seconds):
     def decorator(func):
         @wraps(func)
@@ -125,7 +127,112 @@ COMMON_KEY_AREAS = [
     "Wishlist & Favorites",
     "App Filters & Sorting"
 ]
+async def get_sentiment_anchor_embeddings(client: AzureOpenAI) -> Tuple[List[float], List[float]]:
+    """
+    Generates and caches embeddings for positive and negative sentiment anchors.
+    
+    Args:
+        client: Azure OpenAI client
+        
+    Returns:
+        Tuple of (positive_anchor_embedding, negative_anchor_embedding)
+    """
+    global _positive_anchor_embedding, _negative_anchor_embedding
+    
+    # Return cached embeddings if already generated
+    if _positive_anchor_embedding is not None and _negative_anchor_embedding is not None:
+        return _positive_anchor_embedding, _negative_anchor_embedding
+    
+    # Define positive and negative sentiment anchor texts
+    positive_anchors = [
+        "This is excellent and I'm completely satisfied with the product",
+        "Amazing product, exceeds all my expectations and requirements",
+        "Fantastic experience, would definitely recommend to everyone",
+        "Perfect solution to my problem, extremely happy with results",
+        "Outstanding service and quality, couldn't ask for more"
+    ]
+    
+    negative_anchors = [
+        "This is terrible and I'm completely dissatisfied with the product",
+        "Awful product, completely fails to meet basic expectations",
+        "Horrible experience, would strongly advise against using",
+        "Completely useless for my needs, extremely disappointed",
+        "Poor service and low quality, waste of money and time"
+    ]
+    
+    try:
+        # Generate embeddings for all anchor texts
+        all_anchors = positive_anchors + negative_anchors
+        anchor_embeddings = await get_embeddings(client, all_anchors)
+        
+        # Calculate average embeddings for positive and negative anchors
+        positive_embeddings = anchor_embeddings[:len(positive_anchors)]
+        negative_embeddings = anchor_embeddings[len(positive_anchors):]
+        
+        # Calculate average embeddings
+        _positive_anchor_embedding = np.mean(positive_embeddings, axis=0).tolist()
+        _negative_anchor_embedding = np.mean(negative_embeddings, axis=0).tolist()
+        
+        logger.info("Generated sentiment anchor embeddings successfully")
+        
+        return _positive_anchor_embedding, _negative_anchor_embedding
+    
+    except Exception as e:
+        logger.error(f"Error generating sentiment anchor embeddings: {str(e)}")
+        
+        # Generate fallback embeddings with the same dimension as expected
+        dim = 1536  # text-embedding-3-large dimension
+        _positive_anchor_embedding = list(np.random.normal(0.5, 0.1, dim))
+        _negative_anchor_embedding = list(np.random.normal(-0.5, 0.1, dim))
+        
+        return _positive_anchor_embedding, _negative_anchor_embedding
 
+async def calculate_sentiment_scores(review_embeddings: List[List[float]], client: AzureOpenAI) -> List[float]:
+    """
+    Calculates sentiment scores for reviews by comparing their embeddings to positive/negative anchors.
+    
+    Args:
+        review_embeddings: List of review embedding vectors
+        client: Azure OpenAI client for generating anchor embeddings if needed
+        
+    Returns:
+        List of sentiment scores between -1 and 1 for each review
+    """
+    try:
+        # Get positive and negative anchor embeddings
+        positive_embedding, negative_embedding = await get_sentiment_anchor_embeddings(client)
+        
+        # Convert to numpy arrays for vectorized operations
+        review_matrix = np.array(review_embeddings)
+        pos_embedding = np.array(positive_embedding)
+        neg_embedding = np.array(negative_embedding)
+        
+        # Normalize anchor embeddings
+        pos_embedding = pos_embedding / np.linalg.norm(pos_embedding)
+        neg_embedding = neg_embedding / np.linalg.norm(neg_embedding)
+        
+        # Normalize review embeddings
+        review_norms = np.linalg.norm(review_matrix, axis=1, keepdims=True)
+        review_norm = review_matrix / review_norms
+        
+        # Calculate similarity to positive and negative anchors using vectorized operations
+        positive_sim = np.dot(review_norm, pos_embedding)
+        negative_sim = np.dot(review_norm, neg_embedding)
+        
+        # Calculate sentiment scores: scale from -1 to 1
+        # Higher positive similarity and lower negative similarity = higher score
+        sentiment_scores = positive_sim - negative_sim
+        
+        # Clip values to ensure they stay in [-1, 1] range (should be already, but just to be safe)
+        sentiment_scores = np.clip(sentiment_scores, -1, 1)
+        
+        logger.info(f"Calculated sentiment scores for {len(review_embeddings)} reviews")
+        return sentiment_scores.tolist()
+        
+    except Exception as e:
+        logger.error(f"Error calculating sentiment scores: {str(e)}")
+        # Return neutral sentiment scores as fallback
+        return [0.0] * len(review_embeddings)
 async def process_excel_data(
     client: AzureOpenAI, 
     file_content: bytes,
@@ -263,6 +370,13 @@ async def process_excel_data(
                 batch_embeddings = await get_embeddings(AZURE_CLIENT, batch)
                 all_feedback_embeddings.extend(batch_embeddings)
             
+            # Calculate sentiment scores using the same embeddings we already generated
+            logger.info("Calculating sentiment scores for all feedback items")
+            sentiment_scores = await calculate_sentiment_scores(all_feedback_embeddings, AZURE_CLIENT)
+            
+            # Create a mapping from text to sentiment score
+            text_to_sentiment = {feedback_texts[i]: sentiment_scores[i] for i in range(len(feedback_texts))}
+            
             # Calculate similarity and classify using numpy
             key_area_matrix = np.array(key_area_embeddings)
             feedback_matrix = np.array(all_feedback_embeddings)
@@ -391,6 +505,8 @@ async def process_excel_data(
         logger.info("Classification results:")
         for area, feedbacks in classified_feedback.items():
             logger.info(f"  - {area}: {len(feedbacks)} items")
+        
+        # Create a mapping from text to item and add sentiment scores
         text_to_item = {item["text"]: item for item in all_feedback_items}
         enriched_feedback = {}
         
@@ -400,16 +516,25 @@ async def process_excel_data(
                 if feedback_text in text_to_item:
                     # Include original row data
                     original_item = text_to_item[feedback_text]
-                    enriched_feedback[area].append(original_item.get("original_row", {"text": feedback_text}))
+                    original_row = original_item.get("original_row", {"text": feedback_text})
+                    
+                    # Add sentiment score if available
+                    if feedback_text in text_to_sentiment:
+                        original_row["sentiment"] = text_to_sentiment[feedback_text]
+                    else:
+                        # Use a neutral sentiment as fallback
+                        original_row["sentiment"] = 0.0
+                        
+                    enriched_feedback[area].append(original_row)
                 else:
                     # Fallback if text not found in mapping
-                    enriched_feedback[area].append({"text": feedback_text})
+                    enriched_feedback[area].append({"text": feedback_text, "sentiment": 0.0})
         
-        # Replace classified_feedback with enriched version
+        # Replace classified_feedback with enriched version that includes sentiment
         classified_feedback = enriched_feedback
 
         return {
-            "key_areas": key_areas,  # Now returning the full dictionary structure
+            "key_areas": key_areas,
             "classified_feedback": classified_feedback
         }
         
@@ -1113,6 +1238,13 @@ async def analyze_raw_data_chunks(
             batch_embeddings = await get_embeddings(AZURE_CLIENT, batch)
             all_feedback_embeddings.extend(batch_embeddings)
         
+        # Calculate sentiment scores using the same embeddings we already generated
+        logger.info("Calculating sentiment scores for all feedback items")
+        sentiment_scores = await calculate_sentiment_scores(all_feedback_embeddings, client)
+        
+        # Create a mapping from text to sentiment score
+        text_to_sentiment = {feedback_texts[i]: sentiment_scores[i] for i in range(len(feedback_texts))}
+        
         # Function to calculate cosine similarity matrix
         def cosine_similarity_matrix(A, B):
             # Normalize the matrices
@@ -1168,6 +1300,7 @@ async def analyze_raw_data_chunks(
                 return -1
             else:
                 return obj
+                
         enriched_feedback = {}
         
         for area, feedbacks in classified_feedback.items():
@@ -1178,10 +1311,18 @@ async def analyze_raw_data_chunks(
                     original_item = text_to_item[feedback_text]
                     original_row = original_item.get("original_row", {"text": feedback_text})
                     original_row = clean_json_values(original_row)
+                    
+                    # Add sentiment score if available
+                    if feedback_text in text_to_sentiment:
+                        original_row["sentiment"] = text_to_sentiment[feedback_text]
+                    else:
+                        # Use a neutral sentiment as fallback
+                        original_row["sentiment"] = 0.0
+                        
                     enriched_feedback[area].append(original_row)
                 else:
                     # Fallback if text not found in mapping
-                    enriched_feedback[area].append({"text": feedback_text})
+                    enriched_feedback[area].append({"text": feedback_text, "sentiment": 0.0})
         
         # Replace classified_feedback with enriched version
         classified_feedback = enriched_feedback
@@ -1205,7 +1346,7 @@ async def analyze_raw_data_chunks(
             area_name = area.get('area')
             start_idx = (len(all_feedbacks) * i) // len(basic_areas)
             end_idx = (len(all_feedbacks) * (i+1)) // len(basic_areas)
-            feedback_by_area[area_name] = [item["text"] for item in all_feedbacks[start_idx:end_idx]]
+            feedback_by_area[area_name] = [{"text": item["text"], "sentiment": 0.0} for item in all_feedbacks[start_idx:end_idx]]
         
         return {
             "key_areas": basic_areas,
@@ -1218,7 +1359,7 @@ async def process_csv_data(
     slow_mode: bool = False
 ) -> Dict[str, Any]:
     """
-    Process structured CSV data to extract and classify feedback - optimized version.
+    Process structured CSV data to extract and classify feedback.
     
     Args:
         client: Azure OpenAI client
@@ -1237,15 +1378,14 @@ async def process_csv_data(
             
         logger.info(f"Parsed CSV with {len(df)} rows and {len(df.columns)} columns")
         
-        # Use identify_relevant_columns to find feedback and rating columns
-        columns = await identify_relevant_columns(client, df)
+        # Use OpenAI to identify relevant columns
+        columns = await identify_relevant_columns(AZURE_CLIENT, df)
         feedback_col = columns.get("feedback_col")
         rating_col = columns.get("rating_col")
         
         logger.info(f"Using columns: feedback={feedback_col}, rating={rating_col}")
         
         # Extract feedback items, handling NaN values
-        all_feedback_items = []
         if feedback_col and feedback_col in df.columns:
             # Skip 5-star reviews if rating column exists
             if rating_col and rating_col in df.columns:
@@ -1260,6 +1400,7 @@ async def process_csv_data(
             
             # Extract feedback with ratings - vectorized approach
             valid_rows = df[df[feedback_col].notna() & (df[feedback_col].astype(str).str.strip() != "")]
+            all_feedback_items = []
             for idx, row in valid_rows.iterrows():
                 feedback_text = str(row[feedback_col])
                 if rating_col and rating_col in df.columns and pd.notna(row[rating_col]):
@@ -1272,17 +1413,16 @@ async def process_csv_data(
                 })
         else:
             # If no feedback column identified, use the first text column
+            all_feedback_items = []
             for col in df.columns:
                 if df[col].dtype == 'object':
                     valid_rows = df[df[col].notna() & (df[col].astype(str).str.strip() != "")]
-                    all_feedback_items = [
-                        {
+                    for idx, row in valid_rows.iterrows():
+                        all_feedback_items.append({
                             "text": str(row[col]),
                             "original_index": idx,
                             "original_row": row.to_dict()
-                        }
-                        for idx, row in valid_rows.iterrows()
-                    ]
+                        })
                     break
         
         if not all_feedback_items:
@@ -1290,14 +1430,14 @@ async def process_csv_data(
             
         logger.info(f"Extracted {len(all_feedback_items)} feedback items")
             
-        # Sample for key area identification (limit to 100 items to avoid token limits)
+        # Sample for key area identification
         sample_feedbacks = [item["text"] for item in all_feedback_items[:min(1000, len(all_feedback_items) // 2)]]
         sample_feedback_text = '\n'.join(sample_feedbacks)
         
         # Identify key areas in parallel with other initialization
         key_area_task = asyncio.create_task(identify_key_areas(client, sample_feedback_text))
         
-        # Process feedback in batches for embedding - we'll start this while key areas are being identified
+        # Process feedback in batches for embedding - start while key areas are being identified
         feedback_texts = [item["text"] for item in all_feedback_items]
         
         # Get key areas from the parallel task
@@ -1335,6 +1475,13 @@ async def process_csv_data(
             all_feedback_embeddings = []
             for result in embedding_results[1:]:
                 all_feedback_embeddings.extend(result)
+            
+            # Calculate sentiment scores using the same embeddings we already generated
+            logger.info("Calculating sentiment scores for all feedback items")
+            sentiment_scores = await calculate_sentiment_scores(all_feedback_embeddings, client)
+            
+            # Create a mapping from text to sentiment score
+            text_to_sentiment = {feedback_texts[i]: sentiment_scores[i] for i in range(len(feedback_texts))}
             
             # Calculate similarity and classify using numpy - vectorized operations
             key_area_matrix = np.array(key_area_embeddings)
@@ -1472,10 +1619,26 @@ async def process_csv_data(
                 *[process_chunk(i, chunk) for i, chunk in enumerate(chunks)]
             )
             
+            # Since we don't have embeddings, generate sentiment scores another way
+            
             # Add all classified feedback to the result
             for classifications in chunk_results:
                 for area, feedback_text in classifications:
                     classified_feedback[area].append(feedback_text)
+            
+            # Generate fallback sentiment scores
+            # We'll use a simple keyword-based approach for fallback
+            positive_keywords = ["good", "great", "excellent", "amazing", "love", "best", "happy", "perfect", "satisfied"]
+            negative_keywords = ["bad", "poor", "terrible", "awful", "hate", "worst", "unhappy", "disappointed", "failure"]
+            
+            text_to_sentiment = {}
+            for text in feedback_texts:
+                text_lower = text.lower()
+                pos_count = sum(1 for word in positive_keywords if word in text_lower)
+                neg_count = sum(1 for word in negative_keywords if word in text_lower)
+                # Simple formula: (pos - neg) / (pos + neg + 1) to get score between -1 and 1
+                sentiment = (pos_count - neg_count) / (pos_count + neg_count + 1) if (pos_count + neg_count) > 0 else 0
+                text_to_sentiment[text] = sentiment
         
         # Log classification stats
         logger.info("Classification results:")
@@ -1492,16 +1655,25 @@ async def process_csv_data(
                 if feedback_text in text_to_item:
                     # Include original row data
                     original_item = text_to_item[feedback_text]
-                    enriched_feedback[area].append(original_item.get("original_row", {"text": feedback_text}))
+                    original_row = original_item.get("original_row", {"text": feedback_text})
+                    
+                    # Add sentiment score if available
+                    if feedback_text in text_to_sentiment:
+                        original_row["sentiment"] = text_to_sentiment[feedback_text]
+                    else:
+                        # Use a neutral sentiment as fallback
+                        original_row["sentiment"] = 0.0
+                        
+                    enriched_feedback[area].append(original_row)
                 else:
                     # Fallback if text not found in mapping
-                    enriched_feedback[area].append({"text": feedback_text})
+                    enriched_feedback[area].append({"text": feedback_text, "sentiment": 0.0})
         
         # Replace classified_feedback with enriched version
         classified_feedback = enriched_feedback
 
         return {
-            "key_areas": key_areas,  # Full dictionary structure
+            "key_areas": key_areas,
             "classified_feedback": classified_feedback
         }
         
