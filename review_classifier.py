@@ -145,21 +145,32 @@ async def get_sentiment_anchor_embeddings(client: AzureOpenAI) -> Tuple[List[flo
     
     # Define positive and negative sentiment anchor texts
     positive_anchors = [
-        "This is excellent and I'm completely satisfied with the product",
-        "Amazing product, exceeds all my expectations and requirements",
-        "Fantastic experience, would definitely recommend to everyone",
-        "Perfect solution to my problem, extremely happy with results",
-        "Outstanding service and quality, couldn't ask for more"
+    "excellent",
+    "amazing",
+    "fantastic",
+    "great",
+    "perfect",
+    "love it",
+    "impressive",
+    "satisfied",
+    "wonderful",
+    "delightful"
     ]
     
+    # Better negative anchors (sentiment-pure)
     negative_anchors = [
-        "This is terrible and I'm completely dissatisfied with the product",
-        "Awful product, completely fails to meet basic expectations",
-        "Horrible experience, would strongly advise against using",
-        "Completely useless for my needs, extremely disappointed",
-        "Poor service and low quality, waste of money and time"
+        "terrible",
+        "awful",
+        "horrible",
+        "disappointing",
+        "frustrating",
+        "useless",
+        "hate it",
+        "poor",
+        "annoying",
+        "dreadful"
     ]
-    
+        
     try:
         # Generate embeddings for all anchor texts
         all_anchors = positive_anchors + negative_anchors
