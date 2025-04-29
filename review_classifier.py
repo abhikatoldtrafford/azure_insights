@@ -531,15 +531,15 @@ async def process_excel_data(
                     
                     # Add sentiment score if available
                     if feedback_text in text_to_sentiment:
-                        original_row["sentiment"] = text_to_sentiment[feedback_text]
+                        original_row["sentiment_score"] = text_to_sentiment[feedback_text]
                     else:
                         # Use a neutral sentiment as fallback
-                        original_row["sentiment"] = 0.0
+                        original_row["sentiment_score"] = 0.0
                         
                     enriched_feedback[area].append(original_row)
                 else:
                     # Fallback if text not found in mapping
-                    enriched_feedback[area].append({"text": feedback_text, "sentiment": 0.0})
+                    enriched_feedback[area].append({"text": feedback_text, "sentiment_score": 0.0})
         
         # Replace classified_feedback with enriched version that includes sentiment
         classified_feedback = enriched_feedback
@@ -1325,15 +1325,15 @@ async def analyze_raw_data_chunks(
                     
                     # Add sentiment score if available
                     if feedback_text in text_to_sentiment:
-                        original_row["sentiment"] = text_to_sentiment[feedback_text]
+                        original_row["sentiment_score"] = text_to_sentiment[feedback_text]
                     else:
                         # Use a neutral sentiment as fallback
-                        original_row["sentiment"] = 0.0
+                        original_row["sentiment_score"] = 0.0
                         
                     enriched_feedback[area].append(original_row)
                 else:
                     # Fallback if text not found in mapping
-                    enriched_feedback[area].append({"text": feedback_text, "sentiment": 0.0})
+                    enriched_feedback[area].append({"text": feedback_text, "sentiment_score": 0.0})
         
         # Replace classified_feedback with enriched version
         classified_feedback = enriched_feedback
@@ -1357,7 +1357,7 @@ async def analyze_raw_data_chunks(
             area_name = area.get('area')
             start_idx = (len(all_feedbacks) * i) // len(basic_areas)
             end_idx = (len(all_feedbacks) * (i+1)) // len(basic_areas)
-            feedback_by_area[area_name] = [{"text": item["text"], "sentiment": 0.0} for item in all_feedbacks[start_idx:end_idx]]
+            feedback_by_area[area_name] = [{"text": item["text"], "sentiment_score": 0.0} for item in all_feedbacks[start_idx:end_idx]]
         
         return {
             "key_areas": basic_areas,
@@ -1670,15 +1670,15 @@ async def process_csv_data(
                     
                     # Add sentiment score if available
                     if feedback_text in text_to_sentiment:
-                        original_row["sentiment"] = text_to_sentiment[feedback_text]
+                        original_row["sentiment_score"] = text_to_sentiment[feedback_text]
                     else:
                         # Use a neutral sentiment as fallback
-                        original_row["sentiment"] = 0.0
+                        original_row["sentiment_score"] = 0.0
                         
                     enriched_feedback[area].append(original_row)
                 else:
                     # Fallback if text not found in mapping
-                    enriched_feedback[area].append({"text": feedback_text, "sentiment": 0.0})
+                    enriched_feedback[area].append({"text": feedback_text, "sentiment_score": 0.0})
         
         # Replace classified_feedback with enriched version
         classified_feedback = enriched_feedback
