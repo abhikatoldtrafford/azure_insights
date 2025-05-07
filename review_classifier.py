@@ -1961,7 +1961,21 @@ async def format_analysis_results(analysis_results: Dict[str, Any], return_raw_f
         
         # Only include raw feedback if requested
         if return_raw_feedback:
-            result["raw_feedbacks"] = area_feedbacks
+            # Filter the raw feedback to include only desired columns
+            filtered_feedbacks = []
+            allowed_columns = {"Received", "Name", "Customer Feedback", "Source", "sentiment_score"}
+            
+            for feedback in area_feedbacks:
+                # Create a new dictionary with only the allowed columns
+                filtered_feedback = {}
+                for key, value in feedback.items():
+                    if key in allowed_columns:
+                        filtered_feedback[key] = value
+                
+                # Add the filtered feedback
+                filtered_feedbacks.append(filtered_feedback)
+            
+            result["raw_feedbacks"] = filtered_feedbacks
             
         formatted_results.append(result)
     
