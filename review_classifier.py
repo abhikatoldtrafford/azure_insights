@@ -127,6 +127,69 @@ COMMON_KEY_AREAS = [
     "Wishlist & Favorites",
     "App Filters & Sorting"
 ]
+def standardize_dataframe(df: pd.DataFrame, columns: Dict[str, str], source: str = None) -> pd.DataFrame:
+    """
+    Standardizes a dataframe to have consistent column names and structure.
+    
+    Args:
+        df: Original DataFrame
+        columns: Dictionary mapping column types to actual column names
+        source: Optional source value to override the Source column
+        
+    Returns:
+        Standardized DataFrame with consistent columns
+    """
+    try:
+        logger.info("Standardizing DataFrame to consistent column structure")
+        # Create a copy to avoid modifying the original
+        result_df = df.copy()
+        
+        # Create a mapping from original column names to standard names
+        column_mapping = {}
+        if columns["feedback_col"]:
+            column_mapping[columns["feedback_col"]] = "Customer Feedback"
+        if columns["received_col"]:
+            column_mapping[columns["received_col"]] = "Received"
+        if columns["name_col"]:
+            column_mapping[columns["name_col"]] = "Name"
+        if columns["source_col"]:
+            column_mapping[columns["source_col"]] = "Source"
+            
+        # Rename the columns that were identified
+        result_df = result_df.rename(columns=column_mapping)
+        
+        # Get current columns and desired columns
+        current_columns = set(result_df.columns)
+        desired_columns = {"Received", "Name", "Customer Feedback", "Source"}
+        
+        # Add any missing desired columns with N/A values
+        for col in desired_columns:
+            if col not in current_columns:
+                logger.info(f"Adding missing column '{col}' with N/A values")
+                result_df[col] = "N/A"
+        
+        # Override Source column if source parameter is provided
+        if source:
+            logger.info(f"Overriding Source column with value: {source}")
+            result_df["Source"] = source
+                
+        # Keep only the desired columns plus any that should be preserved
+        columns_to_keep = list(desired_columns)
+        
+        # Add the rating column if it exists and is different from other columns
+        if columns["rating_col"] and columns["rating_col"] not in column_mapping:
+            columns_to_keep.append(columns["rating_col"])
+        
+        # Keep only the desired columns
+        result_df = result_df[columns_to_keep]
+        
+        logger.info(f"Standardized DataFrame structure: {list(result_df.columns)}")
+        return result_df
+        
+    except Exception as e:
+        logger.error(f"Error standardizing DataFrame: {str(e)}")
+        # Return original dataframe if anything goes wrong
+        return df
 async def get_sentiment_anchor_embeddings(client: AzureOpenAI) -> Tuple[List[float], List[float]]:
     """
     Generates and caches embeddings for positive and negative sentiment anchors.
@@ -247,7 +310,8 @@ async def calculate_sentiment_scores(review_embeddings: List[List[float]], clien
 async def process_excel_data(
     client: AzureOpenAI, 
     file_content: bytes,
-    filename: str
+    filename: str,
+    source: str = None  # Add optional source parameter
 ) -> Dict[str, Any]:
     """
     Process Excel file data to extract and classify feedback from all sheets.
@@ -256,6 +320,7 @@ async def process_excel_data(
         client: Azure OpenAI client
         file_content: Raw Excel file content
         filename: Original filename for logging
+        source: Optional source value to override the Source column
         
     Returns:
         Dictionary with key areas and classified feedback
@@ -291,6 +356,15 @@ async def process_excel_data(
                     rating_col = columns.get("rating_col")
                     
                     logger.info(f"Sheet {sheet_name} columns: feedback={feedback_col}, rating={rating_col}")
+                    
+                    # Standardize the dataframe with the optional source parameter
+                    if feedback_col and feedback_col in df.columns:
+                        df = standardize_dataframe(df, columns, source)
+                        # Update column references after standardization
+                        feedback_col = "Customer Feedback"
+                        # If rating column was renamed, update the reference
+                        if rating_col in columns and columns[rating_col] == feedback_col:
+                            rating_col = None
                     
                     # Extract feedback items from this sheet
                     if feedback_col and feedback_col in df.columns:
@@ -566,7 +640,7 @@ async def process_excel_data(
             os.unlink(temp_path)
             
             logger.info("Falling back to CSV processing for Excel data")
-            return await process_csv_data(AZURE_CLIENT, csv_data)
+            return await process_csv_data(AZURE_CLIENT, csv_data, source)
         except Exception as fallback_error:
             logger.error(f"Excel fallback also failed: {str(fallback_error)}")
             # Final fallback - raw data
@@ -900,14 +974,14 @@ async def cosine_similarity(vec1: List[float], vec2: List[float]) -> float:
 
 async def identify_relevant_columns(client: AzureOpenAI, df: pd.DataFrame) -> Dict[str, str]:
     """
-    Uses OpenAI to identify which columns contain ratings and feedback text.
+    Uses OpenAI to identify which columns contain ratings, feedback text, received date, name, and source.
     
     Args:
         client: Azure OpenAI client
         df: Pandas DataFrame containing the data
         
     Returns:
-        Dictionary with 'rating_col' and 'feedback_col' keys
+        Dictionary with column mappings
     """
     try:
         logger.info(f"Beginning column detection on DataFrame with shape: {df.shape}")
@@ -933,7 +1007,7 @@ async def identify_relevant_columns(client: AzureOpenAI, df: pd.DataFrame) -> Di
         ```
 
         TASK:
-        Carefully examine the dataset and identify exactly two types of columns:
+        Carefully examine the dataset and identify these types of columns:
 
         1. CUSTOMER FEEDBACK COLUMN:
            - Contains textual customer opinions, comments, reviews, or feedback
@@ -945,6 +1019,21 @@ async def identify_relevant_columns(client: AzureOpenAI, df: pd.DataFrame) -> Di
            - Contains numerical scores (1-5, 1-10) or textual ratings ("Excellent", "Poor")
            - Often named "rating", "score", "stars", "satisfaction", etc.
            - May be presented as numbers or categorical values
+
+        3. RECEIVED COLUMN:
+           - Contains date or timestamp information when the feedback was received
+           - Often named "date", "received", "submitted", "timestamp", etc.
+           - May be formatted as date, datetime, or timestamp
+
+        4. NAME COLUMN:
+           - Contains the name of the reviewer or customer
+           - Often named "name", "customer", "reviewer", "user", etc.
+           - Usually contains full names, first names, or usernames
+
+        5. SOURCE COLUMN:
+           - Contains information about where the feedback came from
+           - Often named "source", "platform", "channel", "website", etc.
+           - May contain values like "Google", "Amazon", "Website", "App", etc.
 
         For each column you identify, consider:
         - Column content and data type
@@ -961,7 +1050,10 @@ async def identify_relevant_columns(client: AzureOpenAI, df: pd.DataFrame) -> Di
         You must respond with column indices and names in this exact JSON format:
         {{
             "feedback_col": "3: [Exact Column Name]",
-            "rating_col": "1: [Exact Column Name]"
+            "rating_col": "1: [Exact Column Name]",
+            "received_col": "0: [Exact Column Name]",
+            "name_col": "2: [Exact Column Name]",
+            "source_col": "4: [Exact Column Name]"
         }}
         """
         
@@ -979,9 +1071,15 @@ async def identify_relevant_columns(client: AzureOpenAI, df: pd.DataFrame) -> Di
         result = json.loads(result_text)
         
         # Extract column information and handle fuzzy matching if needed
-        columns = {"feedback_col": None, "rating_col": None}
+        columns = {
+            "feedback_col": None, 
+            "rating_col": None,
+            "received_col": None,
+            "name_col": None,
+            "source_col": None
+        }
         
-        for col_type in ["feedback_col", "rating_col"]:
+        for col_type in columns.keys():
             if result.get(col_type):
                 # Parse the response format "index: Column Name"
                 try:
@@ -1003,7 +1101,8 @@ async def identify_relevant_columns(client: AzureOpenAI, df: pd.DataFrame) -> Di
                 except (ValueError, IndexError) as e:
                     logging.warning(f"Error parsing column specification '{result[col_type]}': {e}")
         
-        # Fallbacks if columns not identified
+        # Apply fallback strategies for each column type
+        # Feedback column fallback
         if not columns["feedback_col"]:
             # Try to find a text column with keywords
             keywords = ["comment", "feedback", "review", "text", "description", "comments"]
@@ -1025,6 +1124,7 @@ async def identify_relevant_columns(client: AzureOpenAI, df: pd.DataFrame) -> Di
                         logger.info(f"Sample feedback values: {sample_values}")
                         break
         
+        # Rating column fallback
         if not columns["rating_col"]:
             # Try to find a numeric column with keywords
             keywords = ["rating", "score", "stars", "grade", "rank"]
@@ -1046,27 +1146,75 @@ async def identify_relevant_columns(client: AzureOpenAI, df: pd.DataFrame) -> Di
                             logger.info(f"Selected '{col}' as rating column based on numeric values in typical rating range")
                             columns["rating_col"] = col
                             break
+                            
+        # Received column fallback
+        if not columns["received_col"]:
+            # Try to find date/time columns
+            keywords = ["date", "time", "received", "created", "timestamp", "submitted"]
+            
+            # First check column names
+            for col in df.columns:
+                col_lower = col.lower()
+                if any(keyword in col_lower for keyword in keywords):
+                    logger.info(f"Selected '{col}' as received column based on keyword match")
+                    columns["received_col"] = col
+                    break
+            
+            # If still not found, check for datetime-like columns
+            if not columns["received_col"]:
+                for col in df.columns:
+                    # Check if column has date-like values
+                    if df[col].dtype == 'datetime64[ns]':
+                        logger.info(f"Selected '{col}' as received column based on datetime type")
+                        columns["received_col"] = col
+                        break
+                    elif df[col].dtype == 'object':
+                        # Check if strings might be dates
+                        sample = df[col].dropna().sample(min(5, df[col].notna().sum())).tolist()
+                        date_patterns = [
+                            r'\d{1,4}[-/]\d{1,2}[-/]\d{1,4}',  # yyyy-mm-dd, mm/dd/yyyy
+                            r'\d{1,2}[-/]\d{1,2}[-/]\d{2,4}',  # dd/mm/yyyy, mm-dd-yy
+                            r'\w+\s+\d{1,2},?\s+\d{2,4}'      # Month Day, Year
+                        ]
+                        if any(sample) and any(re.search(pattern, str(s)) for s in sample for pattern in date_patterns):
+                            logger.info(f"Selected '{col}' as received column based on date-like strings")
+                            columns["received_col"] = col
+                            break
+                            
+        # Name column fallback
+        if not columns["name_col"]:
+            keywords = ["name", "customer", "reviewer", "user", "client", "person"]
+            for col in df.columns:
+                col_lower = col.lower()
+                if any(keyword in col_lower for keyword in keywords):
+                    logger.info(f"Selected '{col}' as name column based on keyword match")
+                    columns["name_col"] = col
+                    break
+                    
+        # Source column fallback
+        if not columns["source_col"]:
+            keywords = ["source", "platform", "channel", "origin", "website", "site"]
+            for col in df.columns:
+                col_lower = col.lower()
+                if any(keyword in col_lower for keyword in keywords):
+                    logger.info(f"Selected '{col}' as source column based on keyword match")
+                    columns["source_col"] = col
+                    break
         
-        logger.info(f"COLUMN DETECTION COMPLETE: feedback={columns['feedback_col']}, rating={columns['rating_col']}")
-        
-        # Log column statistics for verification
-        if columns["feedback_col"]:
-            feedback_col = columns["feedback_col"]
-            non_null_count = df[feedback_col].notna().sum()
-            avg_length = df[feedback_col].astype(str).str.len().mean()
-            logger.info(f"Feedback column '{feedback_col}' stats: {non_null_count} non-null values, avg length: {avg_length:.1f} chars")
-        
-        if columns["rating_col"]:
-            rating_col = columns["rating_col"]
-            value_counts = df[rating_col].value_counts().to_dict()
-            logger.info(f"Rating column '{rating_col}' value distribution: {value_counts}")
+        logger.info(f"COLUMN DETECTION COMPLETE: feedback={columns['feedback_col']}, rating={columns['rating_col']}, received={columns['received_col']}, name={columns['name_col']}, source={columns['source_col']}")
         
         return columns
         
     except Exception as e:
         logging.error(f"Error identifying columns: {str(e)}")
         # Return empty result, will fall back to heuristics
-        return {"feedback_col": None, "rating_col": None}
+        return {
+            "feedback_col": None, 
+            "rating_col": None,
+            "received_col": None,
+            "name_col": None,
+            "source_col": None
+        }
 
 async def analyze_raw_data_chunks(
     client: AzureOpenAI, 
@@ -1367,6 +1515,7 @@ async def analyze_raw_data_chunks(
 async def process_csv_data(
     client: AzureOpenAI, 
     csv_data: str,
+    source: str = None,  # Add optional source parameter
     slow_mode: bool = False
 ) -> Dict[str, Any]:
     """
@@ -1375,6 +1524,7 @@ async def process_csv_data(
     Args:
         client: Azure OpenAI client
         csv_data: CSV data as string
+        source: Optional source value to override the Source column
         slow_mode: If True, use the original sequential processing
         
     Returns:
@@ -1395,6 +1545,15 @@ async def process_csv_data(
         rating_col = columns.get("rating_col")
         
         logger.info(f"Using columns: feedback={feedback_col}, rating={rating_col}")
+        
+        # Standardize the dataframe with the optional source parameter
+        if feedback_col and feedback_col in df.columns:
+            df = standardize_dataframe(df, columns, source)
+            # Update column references after standardization
+            feedback_col = "Customer Feedback"
+            # If rating column was renamed, update the reference
+            if rating_col in columns and columns[rating_col] == feedback_col:
+                rating_col = None
         
         # Extract feedback items, handling NaN values
         if feedback_col and feedback_col in df.columns:
@@ -1750,7 +1909,8 @@ async def format_analysis_results(analysis_results: Dict[str, Any], return_raw_f
 @async_timeout(120) 
 async def analyze_feedback(
     file: UploadFile = File(...),
-    return_raw_feedback: bool = Form(True)
+    return_raw_feedback: bool = Form(True),
+    source: str = Form(None)  # Add optional source parameter
 ) -> JSONResponse:
     """
     Analyzes customer feedback from an uploaded CSV or Excel file.
@@ -1758,6 +1918,7 @@ async def analyze_feedback(
     Args:
         file: Uploaded file (CSV or Excel)
         return_raw_feedback: Whether to include raw feedback text in the response
+        source: Optional source value to override the Source column
         
     Returns:
         JSONResponse with analysis results
@@ -1768,6 +1929,7 @@ async def analyze_feedback(
         start_time = time.time()
         logger.info(f"[JOB {job_id}] Starting analysis of file: {file.filename}")
         logger.info(f"[JOB {job_id}] Return raw feedback: {return_raw_feedback}")
+        logger.info(f"[JOB {job_id}] Source override: {source if source else 'None'}")
         
         # Read the uploaded file
         logger.info(f"[JOB {job_id}] Reading file content")
@@ -1781,7 +1943,7 @@ async def analyze_feedback(
         # Process Excel files
         if file_ext in ['.xlsx', '.xls', '.xlsm']:
             logger.info(f"[JOB {job_id}] Detected Excel file, processing with Excel-specific workflow")
-            analysis_results = await process_excel_data(AZURE_CLIENT, file_content, file.filename)
+            analysis_results = await process_excel_data(AZURE_CLIENT, file_content, file.filename, source)
         else:
             # Handle CSV and other file types with existing logic
             try:
@@ -1824,7 +1986,7 @@ async def analyze_feedback(
             # Process the data
             if is_csv:
                 logger.info(f"[JOB {job_id}] File detected as CSV, processing with structured data workflow")
-                analysis_results = await process_csv_data(AZURE_CLIENT, file_text)
+                analysis_results = await process_csv_data(AZURE_CLIENT, file_text, source)
             else:
                 logger.info(f"[JOB {job_id}] File not detected as CSV, processing as raw text")
                 analysis_results = await analyze_raw_data_chunks(AZURE_CLIENT, file_text)
@@ -1832,6 +1994,7 @@ async def analyze_feedback(
         # Format the results with the return_raw_feedback parameter
         logger.info(f"[JOB {job_id}] Formatting final analysis results (return_raw_feedback={return_raw_feedback})")
         formatted_results = await format_analysis_results(analysis_results, return_raw_feedback)
+        
         
         # Log summary statistics
         areas_count = len(formatted_results.get("analysis_results", []))
@@ -1871,7 +2034,8 @@ def integrate_with_main_app(app):
 @async_timeout(120)
 async def standalone_analyze_feedback(
     file: UploadFile = File(...),
-    return_raw_feedback: bool = Form(False)
+    return_raw_feedback: bool = Form(False),
+    source: str = Form(None)  # Add optional source parameter
 ) -> JSONResponse:
     """
     Standalone version of the analyze_feedback endpoint.
@@ -1879,11 +2043,12 @@ async def standalone_analyze_feedback(
     Args:
         file: Uploaded file (expected to be CSV or Excel)
         return_raw_feedback: Whether to include raw feedback text in the response
+        source: Optional source value to override the Source column
         
     Returns:
         JSONResponse with analysis results
     """
-    return await analyze_feedback(file, return_raw_feedback)
+    return await analyze_feedback(file, return_raw_feedback, source)
 @app.post("/classify-single-review")
 async def standalone_classify_single_review(
     request: Request = None,
