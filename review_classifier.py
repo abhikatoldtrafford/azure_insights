@@ -144,6 +144,48 @@ def standardize_dataframe(df: pd.DataFrame, columns: Dict[str, str], source: str
         # Create a copy to avoid modifying the original
         result_df = df.copy()
         
+        # Clean column names - remove trailing/leading whitespace
+        result_df.columns = [col.strip() if isinstance(col, str) else col for col in result_df.columns]
+        
+        # Update column references in the columns dict if they had trailing spaces
+        for col_type in columns:
+            if columns[col_type] and isinstance(columns[col_type], str):
+                columns[col_type] = columns[col_type].strip()
+        
+        # Handle specific column name mappings for common patterns
+        specific_mappings = {
+            "Reviwer": "Name",
+            "Reviewer": "Name", 
+            "Customer Name": "Name",
+            "User": "Name",
+            "Username": "Name",
+            
+            "Review": "Customer Feedback",
+            "Comment": "Customer Feedback",
+            "Feedback": "Customer Feedback",
+            "Comments": "Customer Feedback",
+            
+            "Date": "Received",
+            "Timestamp": "Received",
+            "Time": "Received",
+            "Created At": "Received",
+            "Submitted": "Received",
+            
+            "Platform": "Source",
+            "Channel": "Source",
+            "Website": "Source",
+            "Origin": "Source"
+        }
+        
+        # Apply specific mappings first
+        for old_col, new_col in specific_mappings.items():
+            if old_col in result_df.columns:
+                result_df = result_df.rename(columns={old_col: new_col})
+                # Update the columns dict accordingly
+                for col_type, col_name in columns.items():
+                    if col_name == old_col:
+                        columns[col_type] = new_col
+        
         # Create a mapping from original column names to standard names
         column_mapping = {}
         if columns["feedback_col"]:
@@ -177,8 +219,11 @@ def standardize_dataframe(df: pd.DataFrame, columns: Dict[str, str], source: str
         columns_to_keep = list(desired_columns)
         
         # Add the rating column if it exists and is different from other columns
-        if columns["rating_col"] and columns["rating_col"] not in column_mapping:
-            columns_to_keep.append(columns["rating_col"])
+        if columns["rating_col"] and columns["rating_col"] not in column_mapping and columns["rating_col"] in result_df.columns:
+            # Check if we should keep the rating column
+            rating_col = columns["rating_col"]
+            if rating_col in result_df.columns:
+                columns_to_keep.append(rating_col)
         
         # Keep only the desired columns
         result_df = result_df[columns_to_keep]
@@ -188,8 +233,14 @@ def standardize_dataframe(df: pd.DataFrame, columns: Dict[str, str], source: str
         
     except Exception as e:
         logger.error(f"Error standardizing DataFrame: {str(e)}")
-        # Return original dataframe if anything goes wrong
-        return df
+        # Return a basic dataframe with the required columns if anything goes wrong
+        fallback_df = pd.DataFrame(columns=["Received", "Name", "Customer Feedback", "Source"])
+        if len(df) > 0:
+            fallback_df["Customer Feedback"] = df.iloc[:, 0] if len(df.columns) > 0 else "N/A"
+            fallback_df["Received"] = "N/A"
+            fallback_df["Name"] = "N/A"
+            fallback_df["Source"] = source if source else "N/A"
+        return fallback_df
 async def get_sentiment_anchor_embeddings(client: AzureOpenAI) -> Tuple[List[float], List[float]]:
     """
     Generates and caches embeddings for positive and negative sentiment anchors.
@@ -311,7 +362,7 @@ async def process_excel_data(
     client: AzureOpenAI, 
     file_content: bytes,
     filename: str,
-    source: str = None  # Add optional source parameter
+    source: str = None
 ) -> Dict[str, Any]:
     """
     Process Excel file data to extract and classify feedback from all sheets.
@@ -349,6 +400,7 @@ async def process_excel_data(
                 if not df.empty:
                     sheet_dfs[sheet_name] = df
                     logger.info(f"Sheet {sheet_name}: {len(df)} rows, {len(df.columns)} columns")
+                    logger.info(f"Original columns: {list(df.columns)}")
                     
                     # Use identify_relevant_columns to find feedback and rating columns
                     columns = await identify_relevant_columns(AZURE_CLIENT, df)
@@ -357,55 +409,55 @@ async def process_excel_data(
                     
                     logger.info(f"Sheet {sheet_name} columns: feedback={feedback_col}, rating={rating_col}")
                     
-                    # Standardize the dataframe with the optional source parameter
-                    if feedback_col and feedback_col in df.columns:
-                        df = standardize_dataframe(df, columns, source)
-                        # Update column references after standardization
-                        feedback_col = "Customer Feedback"
-                        # If rating column was renamed, update the reference
-                        if rating_col in columns and columns[rating_col] == feedback_col:
-                            rating_col = None
+                    # Skip processing if no feedback column identified
+                    if not feedback_col or feedback_col not in df.columns:
+                        logger.warning(f"No feedback column identified in sheet {sheet_name}, skipping")
+                        continue
                     
-                    # Extract feedback items from this sheet
-                    if feedback_col and feedback_col in df.columns:
-                        # Skip 5-star reviews if rating column exists
-                        if rating_col and rating_col in df.columns:
-                            try:
-                                df[rating_col] = pd.to_numeric(df[rating_col], errors='coerce')
-                                high_rating_mask = df[rating_col] >= 5
-                                five_star_count = high_rating_mask.sum()
-                                logger.info(f"Skipping {five_star_count} high-rated reviews (5-star)")
-                                df = df[~high_rating_mask]
-                            except:
-                                logger.warning("Could not filter out 5-star reviews, processing all")
-                        
-                        # Extract feedback with ratings
-                        for idx, row in df.iterrows():
-                            if pd.notna(row[feedback_col]) and str(row[feedback_col]).strip():
-                                # Include rating if available
-                                feedback_text = str(row[feedback_col])
-                                if rating_col and rating_col in df.columns and pd.notna(row[rating_col]):
-                                    feedback_text = f"[Rating: {row[rating_col]}] {feedback_text}"
-                                row_dict = row.replace([float('nan'), float('inf'), float('-inf')], -1).to_dict()
-                                all_feedback_items.append({
-                                    "text": feedback_text,
-                                    "original_index": idx,
-                                    "original_row": row_dict,
-                                    "sheet_name": sheet_name  # Add sheet name for reference
-                                })
-                    else:
-                        # If no feedback column identified, use the first text column
-                        for col in df.columns:
-                            if df[col].dtype == 'object':
-                                for idx, row in df.iterrows():
-                                    if pd.notna(row[col]) and str(row[col]).strip():
-                                        all_feedback_items.append({
-                                            "text": str(row[col]),
-                                            "original_index": idx,
-                                            "original_row": row.to_dict(),
-                                            "sheet_name": sheet_name
-                                        })
-                                break
+                    # Apply standardization FIRST - this is critical
+                    df = standardize_dataframe(df, columns, source)
+                    logger.info(f"Standardized columns: {list(df.columns)}")
+                    
+                    # Update column references to use standardized names
+                    feedback_col = "Customer Feedback"  # Always use standardized name
+                    
+                    # Skip 5-star reviews if rating column exists and was kept
+                    rating_col = None
+                    for col in df.columns:
+                        if col not in ["Received", "Name", "Customer Feedback", "Source"] and "rating" in col.lower():
+                            rating_col = col
+                            break
+                    
+                    if rating_col:
+                        try:
+                            df[rating_col] = pd.to_numeric(df[rating_col], errors='coerce')
+                            high_rating_mask = df[rating_col] >= 5
+                            five_star_count = high_rating_mask.sum()
+                            logger.info(f"Skipping {five_star_count} high-rated reviews (5-star)")
+                            df = df[~high_rating_mask]
+                        except Exception as e:
+                            logger.warning(f"Could not filter out 5-star reviews, processing all: {str(e)}")
+                    
+                    # Extract feedback using the standardized dataframe
+                    for idx, row in df.iterrows():
+                        if pd.notna(row[feedback_col]) and str(row[feedback_col]).strip():
+                            # Construct feedback text
+                            feedback_text = str(row[feedback_col])
+                            
+                            # Add rating info if available
+                            if rating_col and pd.notna(row[rating_col]):
+                                feedback_text = f"[Rating: {row[rating_col]}] {feedback_text}"
+                            
+                            # Create row dictionary from standardized dataframe
+                            row_dict = row.replace([float('nan'), float('inf'), float('-inf')], -1).to_dict()
+                            
+                            # Add to feedback items
+                            all_feedback_items.append({
+                                "text": feedback_text,
+                                "original_index": idx,
+                                "original_row": row_dict,  # Now contains standardized column names
+                                "sheet_name": sheet_name
+                            })
             except Exception as sheet_error:
                 logger.error(f"Error processing sheet {sheet_name}: {str(sheet_error)}")
                 # Continue with other sheets even if one fails
@@ -431,7 +483,6 @@ async def process_excel_data(
             
         logger.info(f"Identified {len(key_areas)} key areas")
         
-        # IMPORTANT: Do not convert from dict to string here, preserve the full structure
         # Initialize result structure with empty lists - use the area name as key
         classified_feedback = {area.get('area', f"Area {i+1}"): [] for i, area in enumerate(key_areas)}
         
@@ -599,7 +650,7 @@ async def process_excel_data(
             enriched_feedback[area] = []
             for feedback_text in feedbacks:
                 if feedback_text in text_to_item:
-                    # Include original row data
+                    # Include original row data (which now has standardized column names)
                     original_item = text_to_item[feedback_text]
                     original_row = original_item.get("original_row", {"text": feedback_text})
                     
@@ -612,8 +663,14 @@ async def process_excel_data(
                         
                     enriched_feedback[area].append(original_row)
                 else:
-                    # Fallback if text not found in mapping
-                    enriched_feedback[area].append({"text": feedback_text, "sentiment_score": 0.0})
+                    # Fallback if text not found in mapping - ensure standardized columns
+                    enriched_feedback[area].append({
+                        "Customer Feedback": feedback_text, 
+                        "Received": "N/A",
+                        "Name": "N/A",
+                        "Source": source if source else "N/A",
+                        "sentiment_score": 0.0
+                    })
         
         # Replace classified_feedback with enriched version that includes sentiment
         classified_feedback = enriched_feedback
@@ -1515,7 +1572,7 @@ async def analyze_raw_data_chunks(
 async def process_csv_data(
     client: AzureOpenAI, 
     csv_data: str,
-    source: str = None,  # Add optional source parameter
+    source: str = None,
     slow_mode: bool = False
 ) -> Dict[str, Any]:
     """
@@ -1538,6 +1595,7 @@ async def process_csv_data(
             raise ValueError("Empty or invalid CSV data")
             
         logger.info(f"Parsed CSV with {len(df)} rows and {len(df.columns)} columns")
+        logger.info(f"Original columns: {list(df.columns)}")
         
         # Use OpenAI to identify relevant columns
         columns = await identify_relevant_columns(AZURE_CLIENT, df)
@@ -1546,54 +1604,62 @@ async def process_csv_data(
         
         logger.info(f"Using columns: feedback={feedback_col}, rating={rating_col}")
         
-        # Standardize the dataframe with the optional source parameter
-        if feedback_col and feedback_col in df.columns:
-            df = standardize_dataframe(df, columns, source)
-            # Update column references after standardization
+        # Skip processing if no feedback column identified
+        if not feedback_col or feedback_col not in df.columns:
+            logger.warning(f"No feedback column identified, creating placeholder dataframe")
+            # Create a placeholder dataframe with standardized columns
+            df = pd.DataFrame({
+                "Customer Feedback": df.iloc[:, 0] if len(df.columns) > 0 else ["No feedback data"],
+                "Received": "N/A",
+                "Name": "N/A",
+                "Source": source if source else "N/A"
+            })
             feedback_col = "Customer Feedback"
-            # If rating column was renamed, update the reference
-            if rating_col in columns and columns[rating_col] == feedback_col:
-                rating_col = None
-        
-        # Extract feedback items, handling NaN values
-        if feedback_col and feedback_col in df.columns:
+        else:
+            # Apply standardization FIRST
+            df = standardize_dataframe(df, columns, source)
+            logger.info(f"Standardized columns: {list(df.columns)}")
+            
+            # Update column references to use standardized names
+            feedback_col = "Customer Feedback"  # Always use standardized name
+            
+            # Check if rating column exists in standardized dataframe
+            rating_col = None
+            for col in df.columns:
+                if col not in ["Received", "Name", "Customer Feedback", "Source"] and "rating" in col.lower():
+                    rating_col = col
+                    break
+            
             # Skip 5-star reviews if rating column exists
-            if rating_col and rating_col in df.columns:
+            if rating_col:
                 try:
                     df[rating_col] = pd.to_numeric(df[rating_col], errors='coerce')
                     high_rating_mask = df[rating_col] >= 5
                     five_star_count = high_rating_mask.sum()
                     logger.info(f"Skipping {five_star_count} high-rated reviews (5-star)")
                     df = df[~high_rating_mask]
-                except:
-                    logger.warning("Could not filter out 5-star reviews, processing all")
+                except Exception as e:
+                    logger.warning(f"Could not filter out 5-star reviews, processing all: {str(e)}")
+        
+        # Extract feedback with ratings - vectorized approach from standardized dataframe
+        valid_rows = df[df[feedback_col].notna() & (df[feedback_col].astype(str).str.strip() != "")]
+        all_feedback_items = []
+        
+        for idx, row in valid_rows.iterrows():
+            feedback_text = str(row[feedback_col])
             
-            # Extract feedback with ratings - vectorized approach
-            valid_rows = df[df[feedback_col].notna() & (df[feedback_col].astype(str).str.strip() != "")]
-            all_feedback_items = []
-            for idx, row in valid_rows.iterrows():
-                feedback_text = str(row[feedback_col])
-                if rating_col and rating_col in df.columns and pd.notna(row[rating_col]):
-                    feedback_text = f"[Rating: {row[rating_col]}] {feedback_text}"
-                row_dict = row.replace([float('nan'), float('inf'), float('-inf')], -1).to_dict()
-                all_feedback_items.append({
-                    "text": feedback_text,
-                    "original_index": idx,
-                    "original_row": row_dict
-                })
-        else:
-            # If no feedback column identified, use the first text column
-            all_feedback_items = []
-            for col in df.columns:
-                if df[col].dtype == 'object':
-                    valid_rows = df[df[col].notna() & (df[col].astype(str).str.strip() != "")]
-                    for idx, row in valid_rows.iterrows():
-                        all_feedback_items.append({
-                            "text": str(row[col]),
-                            "original_index": idx,
-                            "original_row": row.to_dict()
-                        })
-                    break
+            # Add rating info if available
+            if rating_col and rating_col in df.columns and pd.notna(row[rating_col]):
+                feedback_text = f"[Rating: {row[rating_col]}] {feedback_text}"
+            
+            # Create row dictionary from standardized dataframe
+            row_dict = row.replace([float('nan'), float('inf'), float('-inf')], -1).to_dict()
+            
+            all_feedback_items.append({
+                "text": feedback_text,
+                "original_index": idx,
+                "original_row": row_dict  # Now contains standardized column names
+            })
         
         if not all_feedback_items:
             raise ValueError("No valid feedback found in the CSV data")
@@ -1789,26 +1855,24 @@ async def process_csv_data(
                 *[process_chunk(i, chunk) for i, chunk in enumerate(chunks)]
             )
             
-            # Since we don't have embeddings, generate sentiment scores another way
-            
             # Add all classified feedback to the result
             for classifications in chunk_results:
                 for area, feedback_text in classifications:
                     classified_feedback[area].append(feedback_text)
             
-            # Generate fallback sentiment scores
-            # We'll use a simple keyword-based approach for fallback
-            positive_keywords = ["good", "great", "excellent", "amazing", "love", "best", "happy", "perfect", "satisfied"]
-            negative_keywords = ["bad", "poor", "terrible", "awful", "hate", "worst", "unhappy", "disappointed", "failure"]
-            
-            text_to_sentiment = {}
-            for text in feedback_texts:
-                text_lower = text.lower()
-                pos_count = sum(1 for word in positive_keywords if word in text_lower)
-                neg_count = sum(1 for word in negative_keywords if word in text_lower)
-                # Simple formula: (pos - neg) / (pos + neg + 1) to get score between -1 and 1
-                sentiment = (pos_count - neg_count) / (pos_count + neg_count + 1) if (pos_count + neg_count) > 0 else 0
-                text_to_sentiment[text] = sentiment
+            # Generate fallback sentiment scores if we don't have embeddings
+            if not text_to_sentiment:
+                # Use a simple keyword-based approach for fallback
+                positive_keywords = ["good", "great", "excellent", "amazing", "love", "best", "happy", "perfect", "satisfied"]
+                negative_keywords = ["bad", "poor", "terrible", "awful", "hate", "worst", "unhappy", "disappointed", "failure"]
+                
+                for text in feedback_texts:
+                    text_lower = text.lower()
+                    pos_count = sum(1 for word in positive_keywords if word in text_lower)
+                    neg_count = sum(1 for word in negative_keywords if word in text_lower)
+                    # Simple formula: (pos - neg) / (pos + neg + 1) to get score between -1 and 1
+                    sentiment = (pos_count - neg_count) / (pos_count + neg_count + 1) if (pos_count + neg_count) > 0 else 0
+                    text_to_sentiment[text] = sentiment
         
         # Log classification stats
         logger.info("Classification results:")
@@ -1823,7 +1887,7 @@ async def process_csv_data(
             enriched_feedback[area] = []
             for feedback_text in feedbacks:
                 if feedback_text in text_to_item:
-                    # Include original row data
+                    # Include original row data (which now has standardized column names)
                     original_item = text_to_item[feedback_text]
                     original_row = original_item.get("original_row", {"text": feedback_text})
                     
@@ -1836,8 +1900,14 @@ async def process_csv_data(
                         
                     enriched_feedback[area].append(original_row)
                 else:
-                    # Fallback if text not found in mapping
-                    enriched_feedback[area].append({"text": feedback_text, "sentiment_score": 0.0})
+                    # Fallback if text not found in mapping - ensure standardized columns
+                    enriched_feedback[area].append({
+                        "Customer Feedback": feedback_text, 
+                        "Received": "N/A",
+                        "Name": "N/A",
+                        "Source": source if source else "N/A",
+                        "sentiment_score": 0.0
+                    })
         
         # Replace classified_feedback with enriched version
         classified_feedback = enriched_feedback
