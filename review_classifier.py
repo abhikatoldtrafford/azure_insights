@@ -321,13 +321,18 @@ async def generate_summary(
                 """,
                 
                 "overall_summary": f"""
-                Below are {len(sample_reviews)} selected customer reviews covering what users love, requested features, and pain points:
+                Below are {len(sample_reviews)} selected customer reviews:
                 
                 {combined_reviews}
                 
                 ONLY if there is sufficient meaningful feedback in these reviews, provide a comprehensive yet concise summary 
-                (approximately 50 words) of the overall customer sentiment, key strengths, major pain points, and most wanted 
-                features based EXCLUSIVELY on these specific reviews.
+                (approximately 50 words) of the overall customer sentiment and key themes mentioned in these specific reviews.
+                
+                Your summary should:
+                1. Reflect only what's actually mentioned in these specific reviews
+                2. Capture the main themes and sentiments expressed
+                3. Be a fresh analysis, not a combination of previous categorizations
+                4. Stay neutral in your analysis terminology and avoid using category terms like "pain points"
                 
                 IMPORTANT: If the reviews contain insufficient meaningful feedback or are too sparse, 
                 respond with EXACTLY this phrase: "Insufficient meaningful feedback to generate an overall summary."
@@ -365,14 +370,32 @@ async def generate_summary(
         feature_request_summary = await feature_request_summary_task
         pain_point_summary = await pain_point_summary_task
         
-        # Create a combined set of reviews for overall summary (up to 10 from each category)
+        # Create a fresh combined set of reviews for overall summary (up to 10 from each category)
+        # Select reviews but avoid duplicates to ensure we're getting a diverse set
         overall_reviews = []
+        
+        # Function to add reviews while avoiding duplicates
+        def add_unique_reviews(reviews_list, source_reviews, count=10):
+            # Create a set of existing review texts for easy comparison
+            existing_texts = set(r.lower() for r in reviews_list)
+            added = 0
+            
+            for review in source_reviews:
+                # Only add if not already in the list (case-insensitive comparison)
+                if review.lower() not in existing_texts:
+                    reviews_list.append(review)
+                    existing_texts.add(review.lower())
+                    added += 1
+                    if added >= count:
+                        break
+        
+        # Add unique reviews from each category
         if top_user_loves:
-            overall_reviews.extend(top_user_loves[:min(10, len(top_user_loves))])
+            add_unique_reviews(overall_reviews, top_user_loves, 10)
         if top_feature_requests:
-            overall_reviews.extend(top_feature_requests[:min(10, len(top_feature_requests))])
+            add_unique_reviews(overall_reviews, top_feature_requests, 10)
         if top_pain_points:
-            overall_reviews.extend(top_pain_points[:min(10, len(top_pain_points))])
+            add_unique_reviews(overall_reviews, top_pain_points, 10)
         
         # Only generate overall summary if we have enough meaningful data
         if len(overall_reviews) >= 5:
