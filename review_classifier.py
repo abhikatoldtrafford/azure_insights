@@ -134,7 +134,8 @@ async def generate_summary(
     slow_mode: bool = False
 ) -> Dict[str, str]:
     """
-    Analyzes customer feedback to identify what users love, what features they request, and their pain points.
+    Analyzes customer feedback to identify what users love, what features they request, their pain points,
+    and generates an overall summary of the feedback.
     
     Args:
         client: Azure OpenAI client
@@ -143,7 +144,7 @@ async def generate_summary(
         slow_mode: If True, use slower but more methodical processing
         
     Returns:
-        Dictionary with user_loves, feature_request, and pain_point summaries
+        Dictionary with user_loves, feature_request, pain_point, and overall_summary
     """
     try:
         logger.info(f"Generating summary insights from {len(review_texts)} reviews")
@@ -221,7 +222,8 @@ async def generate_summary(
             return {
                 "user_loves": "Not enough reviews to determine what users love",
                 "feature_request": "Not enough reviews to identify feature requests",
-                "pain_point": "Not enough reviews to identify pain points"
+                "pain_point": "Not enough reviews to identify pain points",
+                "overall_summary": "Not enough reviews to generate an overall summary"
             }
         
         # Select top reviews for each category (up to 15)
@@ -272,6 +274,16 @@ async def generate_summary(
                 
                 Based only on these reviews, summarize in ONE concise sentence what is the biggest pain point or issue users are experiencing.
                 Focus on specific problems that need addressing, not general dissatisfaction.
+                """,
+                
+                "overall_summary": f"""
+                Below are selected customer reviews covering what users love, requested features, and pain points:
+                
+                {combined_reviews}
+                
+                Provide a comprehensive yet concise summary (approximately 50 words) of the overall customer sentiment, 
+                key strengths, major pain points, and most wanted features based on these reviews.
+                Focus on concrete, actionable insights that would help product managers prioritize improvements.
                 """
             }
             
@@ -295,21 +307,34 @@ async def generate_summary(
                 logger.error(f"Error generating summary for {category_name}: {str(e)}")
                 return f"Unable to generate summary for {category_name} due to an error"
         
-        # Generate summaries in parallel
+        # Generate summaries in parallel for individual categories
         user_loves_summary_task = asyncio.create_task(generate_category_summary(top_user_loves, "user_loves"))
         feature_request_summary_task = asyncio.create_task(generate_category_summary(top_feature_requests, "feature_request"))
         pain_point_summary_task = asyncio.create_task(generate_category_summary(top_pain_points, "pain_point"))
         
-        # Wait for all summaries to complete
+        # Wait for all category summaries to complete
         user_loves_summary = await user_loves_summary_task
         feature_request_summary = await feature_request_summary_task
         pain_point_summary = await pain_point_summary_task
+        
+        # Create a combined set of reviews for overall summary (10 from each category)
+        overall_reviews = []
+        if top_user_loves:
+            overall_reviews.extend(top_user_loves[:10])
+        if top_feature_requests:
+            overall_reviews.extend(top_feature_requests[:10])
+        if top_pain_points:
+            overall_reviews.extend(top_pain_points[:10])
+        
+        # Generate overall summary using the combined reviews
+        overall_summary = await generate_category_summary(overall_reviews, "overall_summary")
         
         # Return the summaries
         return {
             "user_loves": user_loves_summary,
             "feature_request": feature_request_summary,
-            "pain_point": pain_point_summary
+            "pain_point": pain_point_summary,
+            "overall_summary": overall_summary
         }
         
     except Exception as e:
@@ -318,7 +343,8 @@ async def generate_summary(
         return {
             "user_loves": "Unable to determine what users love due to an error",
             "feature_request": "Unable to identify feature requests due to an error",
-            "pain_point": "Unable to identify pain points due to an error"
+            "pain_point": "Unable to identify pain points due to an error",
+            "overall_summary": "Unable to generate an overall summary due to an error"
         }
 def standardize_dataframe(df: pd.DataFrame, columns: Dict[str, str], source: str = None) -> pd.DataFrame:
     """
