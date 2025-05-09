@@ -127,6 +127,199 @@ COMMON_KEY_AREAS = [
     "Wishlist & Favorites",
     "App Filters & Sorting"
 ]
+async def generate_summary(
+    client: AzureOpenAI,
+    review_embeddings: List[List[float]],
+    review_texts: List[str],
+    slow_mode: bool = False
+) -> Dict[str, str]:
+    """
+    Analyzes customer feedback to identify what users love, what features they request, and their pain points.
+    
+    Args:
+        client: Azure OpenAI client
+        review_embeddings: List of review embedding vectors
+        review_texts: List of original review text
+        slow_mode: If True, use slower but more methodical processing
+        
+    Returns:
+        Dictionary with user_loves, feature_request, and pain_point summaries
+    """
+    try:
+        logger.info(f"Generating summary insights from {len(review_texts)} reviews")
+        
+        # Define anchor texts for each category
+        user_loves_anchors = [
+            "I really love this feature",
+            "This is my favorite part about the product",
+            "The best thing about this service is",
+            "What I appreciate most is",
+            "This works exceptionally well",
+            "I'm impressed by how well it handles",
+            "The most useful feature for me is",
+            "This makes my life so much easier"
+        ]
+        
+        feature_request_anchors = [
+            "I wish this product had",
+            "It would be great if you could add",
+            "Please consider adding a feature for",
+            "The one thing this product needs is",
+            "I would love to see this improved with",
+            "Could you please implement",
+            "This would be perfect if it included",
+            "What's missing is"
+        ]
+        
+        pain_point_anchors = [
+            "The most frustrating thing is",
+            "This doesn't work properly when",
+            "I'm having trouble with",
+            "The biggest problem I have is",
+            "This is consistently failing to",
+            "It's really annoying when",
+            "What needs to be fixed urgently is",
+            "I can't stand how it"
+        ]
+        
+        # Generate embeddings for anchor texts
+        all_anchors = user_loves_anchors + feature_request_anchors + pain_point_anchors
+        anchor_embeddings = await get_embeddings(client, all_anchors)
+        
+        # Split anchor embeddings by category
+        user_loves_embeddings = anchor_embeddings[:len(user_loves_anchors)]
+        feature_request_embeddings = anchor_embeddings[len(user_loves_anchors):len(user_loves_anchors) + len(feature_request_anchors)]
+        pain_point_embeddings = anchor_embeddings[len(user_loves_anchors) + len(feature_request_anchors):]
+        
+        # Calculate average embeddings for each category
+        user_loves_embedding = np.mean(user_loves_embeddings, axis=0)
+        feature_request_embedding = np.mean(feature_request_embeddings, axis=0)
+        pain_point_embedding = np.mean(pain_point_embeddings, axis=0)
+        
+        # Convert to numpy arrays for vectorized operations
+        review_matrix = np.array(review_embeddings)
+        user_loves_vec = np.array(user_loves_embedding)
+        feature_request_vec = np.array(feature_request_embedding)
+        pain_point_vec = np.array(pain_point_embedding)
+        
+        # Normalize vectors
+        user_loves_vec = user_loves_vec / np.linalg.norm(user_loves_vec)
+        feature_request_vec = feature_request_vec / np.linalg.norm(feature_request_vec)
+        pain_point_vec = pain_point_vec / np.linalg.norm(pain_point_vec)
+        
+        review_norms = np.linalg.norm(review_matrix, axis=1, keepdims=True)
+        review_matrix_norm = review_matrix / review_norms
+        
+        # Calculate similarity scores for each category
+        user_loves_scores = np.dot(review_matrix_norm, user_loves_vec)
+        feature_request_scores = np.dot(review_matrix_norm, feature_request_vec)
+        pain_point_scores = np.dot(review_matrix_norm, pain_point_vec)
+        
+        # Handle case of no reviews or minimal data
+        if len(review_texts) < 3:
+            logger.warning("Too few reviews for reliable summary generation")
+            return {
+                "user_loves": "Not enough reviews to determine what users love",
+                "feature_request": "Not enough reviews to identify feature requests",
+                "pain_point": "Not enough reviews to identify pain points"
+            }
+        
+        # Select top reviews for each category (up to 15)
+        def get_top_reviews(scores, texts, n=15):
+            if len(scores) == 0:
+                return []
+            top_indices = np.argsort(scores)[-min(n, len(scores)):]
+            return [texts[i] for i in top_indices]
+        
+        top_user_loves = get_top_reviews(user_loves_scores, review_texts)
+        top_feature_requests = get_top_reviews(feature_request_scores, review_texts)
+        top_pain_points = get_top_reviews(pain_point_scores, review_texts)
+        
+        # Function to generate summary using OpenAI
+        async def generate_category_summary(reviews, category_name):
+            if not reviews:
+                return f"No clear {category_name} identified in the reviews"
+            
+            # Take a maximum of 15 reviews to avoid token limits
+            sample_reviews = reviews[:15]
+            
+            # Combine reviews into a single text
+            combined_reviews = "\n".join([f"- {review}" for review in sample_reviews])
+            
+            prompt_templates = {
+                "user_loves": f"""
+                Below are customer reviews that indicate features or aspects users love about the product:
+                
+                {combined_reviews}
+                
+                Based only on these reviews, summarize in ONE concise sentence what users love most about the product. 
+                Focus on concrete features or aspects, not general satisfaction.
+                """,
+                
+                "feature_request": f"""
+                Below are customer reviews that suggest features users would like to see added:
+                
+                {combined_reviews}
+                
+                Based only on these reviews, summarize in ONE concise sentence what feature or improvement users most commonly request.
+                Focus on clear feature requests, not general complaints.
+                """,
+                
+                "pain_point": f"""
+                Below are customer reviews that highlight pain points or issues:
+                
+                {combined_reviews}
+                
+                Based only on these reviews, summarize in ONE concise sentence what is the biggest pain point or issue users are experiencing.
+                Focus on specific problems that need addressing, not general dissatisfaction.
+                """
+            }
+            
+            try:
+                response = client.chat.completions.create(
+                    model="gpt-4.1-mini",
+                    messages=[
+                        {"role": "system", "content": "You are a customer insight specialist who extracts clear, actionable insights from reviews."},
+                        {"role": "user", "content": prompt_templates[category_name]}
+                    ],
+                    temperature=0.3,
+                    max_tokens=100
+                )
+                
+                summary = response.choices[0].message.content.strip()
+                # Remove any quotes that might be around the summary
+                summary = summary.strip('"\'')
+                return summary
+                
+            except Exception as e:
+                logger.error(f"Error generating summary for {category_name}: {str(e)}")
+                return f"Unable to generate summary for {category_name} due to an error"
+        
+        # Generate summaries in parallel
+        user_loves_summary_task = asyncio.create_task(generate_category_summary(top_user_loves, "user_loves"))
+        feature_request_summary_task = asyncio.create_task(generate_category_summary(top_feature_requests, "feature_request"))
+        pain_point_summary_task = asyncio.create_task(generate_category_summary(top_pain_points, "pain_point"))
+        
+        # Wait for all summaries to complete
+        user_loves_summary = await user_loves_summary_task
+        feature_request_summary = await feature_request_summary_task
+        pain_point_summary = await pain_point_summary_task
+        
+        # Return the summaries
+        return {
+            "user_loves": user_loves_summary,
+            "feature_request": feature_request_summary,
+            "pain_point": pain_point_summary
+        }
+        
+    except Exception as e:
+        logger.error(f"Error generating summary insights: {str(e)}\n{traceback.format_exc()}")
+        # Return default values on error
+        return {
+            "user_loves": "Unable to determine what users love due to an error",
+            "feature_request": "Unable to identify feature requests due to an error",
+            "pain_point": "Unable to identify pain points due to an error"
+        }
 def standardize_dataframe(df: pd.DataFrame, columns: Dict[str, str], source: str = None) -> pd.DataFrame:
     """
     Standardizes a dataframe to have consistent column names and structure.
@@ -374,7 +567,7 @@ async def process_excel_data(
         source: Optional source value to override the Source column
         
     Returns:
-        Dictionary with key areas and classified feedback
+        Dictionary with key areas, classified feedback, and insight summaries
     """
     try:
         # Save the content to a temporary file for pandas to read
@@ -506,6 +699,14 @@ async def process_excel_data(
                 batch_embeddings = await get_embeddings(AZURE_CLIENT, batch)
                 all_feedback_embeddings.extend(batch_embeddings)
             
+            # Generate insight summaries using the same embeddings
+            logger.info("Generating insight summaries from feedback embeddings")
+            insight_summary = await generate_summary(
+                AZURE_CLIENT, 
+                all_feedback_embeddings, 
+                feedback_texts
+            )
+            
             # Calculate sentiment scores using the same embeddings we already generated
             logger.info("Calculating sentiment scores for all feedback items")
             sentiment_scores = await calculate_sentiment_scores(all_feedback_embeddings, AZURE_CLIENT)
@@ -557,6 +758,13 @@ async def process_excel_data(
         except Exception as e:
             logger.error(f"Error with embedding classification: {str(e)}")
             logger.info("Falling back to direct OpenAI classification")
+            
+            # Fallback for insight summary if embeddings failed
+            insight_summary = {
+                "user_loves": "Unable to determine what users love due to an error in embeddings processing",
+                "feature_request": "Unable to identify feature requests due to an error in embeddings processing",
+                "pain_point": "Unable to identify pain points due to an error in embeddings processing"
+            }
             
             # Fall back to chunked classification via OpenAI
             chunk_size = 10
@@ -677,7 +885,8 @@ async def process_excel_data(
 
         return {
             "key_areas": key_areas,
-            "classified_feedback": classified_feedback
+            "classified_feedback": classified_feedback,
+            "insight_summary": insight_summary  # Add the insight summary to the return value
         }
         
     except Exception as e:
@@ -1291,7 +1500,7 @@ async def analyze_raw_data_chunks(
         slow_mode: If True, use the original sequential processing
         
     Returns:
-        Dictionary with key areas and classified feedback
+        Dictionary with key areas, classified feedback, and insight summaries
     """
     try:
         # Split data into chunks
@@ -1454,6 +1663,14 @@ async def analyze_raw_data_chunks(
             batch_embeddings = await get_embeddings(AZURE_CLIENT, batch)
             all_feedback_embeddings.extend(batch_embeddings)
         
+        # Generate insight summaries based on embeddings
+        logger.info("Generating insight summaries from feedback embeddings")
+        insight_summary = await generate_summary(
+            client, 
+            all_feedback_embeddings, 
+            feedback_texts
+        )
+        
         # Calculate sentiment scores using the same embeddings we already generated
         logger.info("Calculating sentiment scores for all feedback items")
         sentiment_scores = await calculate_sentiment_scores(all_feedback_embeddings, client)
@@ -1544,7 +1761,8 @@ async def analyze_raw_data_chunks(
         classified_feedback = enriched_feedback
         return {
             "key_areas": final_areas,  # Return the full dictionary structure
-            "classified_feedback": classified_feedback
+            "classified_feedback": classified_feedback,
+            "insight_summary": insight_summary  # Add the insight summary to the return value
         }
         
     except Exception as e:
@@ -1564,11 +1782,18 @@ async def analyze_raw_data_chunks(
             end_idx = (len(all_feedbacks) * (i+1)) // len(basic_areas)
             feedback_by_area[area_name] = [{"text": item["text"], "sentiment_score": 0.0} for item in all_feedbacks[start_idx:end_idx]]
         
+        # Fallback insight summary
+        fallback_insight_summary = {
+            "user_loves": "Unable to determine what users love due to an error in data processing",
+            "feature_request": "Unable to identify feature requests due to an error in data processing",
+            "pain_point": "Unable to identify pain points due to an error in data processing"
+        }
+        
         return {
             "key_areas": basic_areas,
-            "classified_feedback": feedback_by_area
+            "classified_feedback": feedback_by_area,
+            "insight_summary": fallback_insight_summary  # Add this section
         }
-
 async def process_csv_data(
     client: AzureOpenAI, 
     csv_data: str,
@@ -1585,7 +1810,7 @@ async def process_csv_data(
         slow_mode: If True, use the original sequential processing
         
     Returns:
-        Dictionary with key areas and classified feedback
+        Dictionary with key areas, classified feedback, and insight summaries
     """
     try:
         # Parse CSV data
@@ -1712,6 +1937,14 @@ async def process_csv_data(
             for result in embedding_results[1:]:
                 all_feedback_embeddings.extend(result)
             
+            # Generate insight summaries using the embeddings
+            logger.info("Generating insight summaries from feedback embeddings")
+            insight_summary = await generate_summary(
+                client, 
+                all_feedback_embeddings, 
+                feedback_texts
+            )
+            
             # Calculate sentiment scores using the same embeddings we already generated
             logger.info("Calculating sentiment scores for all feedback items")
             sentiment_scores = await calculate_sentiment_scores(all_feedback_embeddings, client)
@@ -1762,6 +1995,13 @@ async def process_csv_data(
         except Exception as e:
             logger.error(f"Error with embedding classification: {str(e)}")
             logger.info("Falling back to direct OpenAI classification")
+            
+            # Fallback for insight summary if embeddings failed
+            insight_summary = {
+                "user_loves": "Unable to determine what users love due to an error in embeddings processing",
+                "feature_request": "Unable to identify feature requests due to an error in embeddings processing",
+                "pain_point": "Unable to identify pain points due to an error in embeddings processing"
+            }
             
             # Fall back to chunked classification via OpenAI
             chunk_size = 10
@@ -1873,6 +2113,49 @@ async def process_csv_data(
                     # Simple formula: (pos - neg) / (pos + neg + 1) to get score between -1 and 1
                     sentiment = (pos_count - neg_count) / (pos_count + neg_count + 1) if (pos_count + neg_count) > 0 else 0
                     text_to_sentiment[text] = sentiment
+            
+            # If we couldn't generate insight summary from embeddings, try to generate it via direct OpenAI call
+            if "Unable to determine what users love" in insight_summary["user_loves"]:
+                try:
+                    # Take a sample of reviews for each category 
+                    sample_size = min(200, len(feedback_texts))
+                    sample_reviews = feedback_texts[:sample_size]
+                    combined_reviews = "\n".join([f"- {review}" for review in sample_reviews])
+                    
+                    # Generate a summary directly from OpenAI
+                    prompt = f"""
+                    I have a collection of {len(feedback_texts)} customer reviews. Here's a sample:
+                    
+                    {combined_reviews}
+                    
+                    Based on these reviews, please provide:
+                    1. What users love most about the product (focus on concrete features)
+                    2. What features users are most commonly requesting
+                    3. What are the biggest pain points users are experiencing
+                    
+                    Keep each response to a single concise sentence.
+                    Format as a JSON object with these three keys: user_loves, feature_request, pain_point
+                    """
+                    
+                    response = client.chat.completions.create(
+                        model="gpt-4.1-mini",
+                        messages=[
+                            {"role": "system", "content": "You are a customer insight specialist who extracts clear, actionable insights from reviews."},
+                            {"role": "user", "content": prompt}
+                        ],
+                        temperature=0.3,
+                        response_format={"type": "json_object"}
+                    )
+                    
+                    direct_summary = json.loads(response.choices[0].message.content)
+                    insight_summary = {
+                        "user_loves": direct_summary.get("user_loves", "No clear indication of what users love"),
+                        "feature_request": direct_summary.get("feature_request", "No clear feature requests identified"),
+                        "pain_point": direct_summary.get("pain_point", "No clear pain points identified")
+                    }
+                except Exception as summary_error:
+                    logger.error(f"Error generating direct summary: {str(summary_error)}")
+                    # Keep existing fallback summaries
         
         # Log classification stats
         logger.info("Classification results:")
@@ -1914,7 +2197,8 @@ async def process_csv_data(
 
         return {
             "key_areas": key_areas,
-            "classified_feedback": classified_feedback
+            "classified_feedback": classified_feedback,
+            "insight_summary": insight_summary  # Add the insight summary to the return value
         }
         
     except Exception as e:
@@ -1927,7 +2211,7 @@ async def format_analysis_results(analysis_results: Dict[str, Any], return_raw_f
     Format the analysis results into the final structure.
     
     Args:
-        analysis_results: Dictionary with key areas and classified feedback
+        analysis_results: Dictionary with key areas, classified feedback, and insight summary
         return_raw_feedback: Whether to include raw feedback text in the response
         
     Returns:
@@ -1935,6 +2219,11 @@ async def format_analysis_results(analysis_results: Dict[str, Any], return_raw_f
     """
     key_areas = analysis_results.get("key_areas", [])
     classified_feedback = analysis_results.get("classified_feedback", {})
+    insight_summary = analysis_results.get("insight_summary", {
+        "user_loves": "No clear insights on what users love",
+        "feature_request": "No clear feature requests identified",
+        "pain_point": "No clear pain points identified"
+    })
     
     # Format the results
     formatted_results = []
@@ -1987,7 +2276,8 @@ async def format_analysis_results(analysis_results: Dict[str, Any], return_raw_f
         "summary": {
             "total_feedback_items": sum(len(feedbacks) for feedbacks in classified_feedback.values()),
             "total_key_areas": len(key_areas)
-        }
+        },
+        "insight_summary": insight_summary  # Add the insight summary to the return value
     }
 @router.post("/analyze-feedback")
 @async_timeout(120) 
