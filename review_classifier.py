@@ -149,6 +149,30 @@ async def generate_summary(
     try:
         logger.info(f"Generating summary insights from {len(review_texts)} reviews")
         
+        # More robust check for insufficient data
+        if len(review_texts) < 5:
+            logger.warning(f"Insufficient reviews ({len(review_texts)}) for reliable summary generation")
+            return {
+                "user_loves": "Not enough reviews to determine what users love",
+                "feature_request": "Not enough reviews to identify feature requests",
+                "pain_point": "Not enough reviews to identify pain points",
+                "overall_summary": "Not enough reviews to generate an overall summary"
+            }
+            
+        # Check for meaningful content
+        meaningful_reviews = [r for r in review_texts if r and len(r.strip()) > 10]
+        if len(meaningful_reviews) < 5:
+            logger.warning(f"Only {len(meaningful_reviews)} meaningful reviews found - not enough for summary")
+            return {
+                "user_loves": "Not enough meaningful reviews to determine what users love",
+                "feature_request": "Not enough meaningful reviews to identify feature requests",
+                "pain_point": "Not enough meaningful reviews to identify pain points",
+                "overall_summary": "Not enough meaningful reviews to generate an overall summary"
+            }
+        
+        # Use the meaningful reviews only
+        review_texts = meaningful_reviews
+        
         # Define anchor texts for each category
         user_loves_anchors = [
             "I really love this feature",
@@ -198,7 +222,7 @@ async def generate_summary(
         pain_point_embedding = np.mean(pain_point_embeddings, axis=0)
         
         # Convert to numpy arrays for vectorized operations
-        review_matrix = np.array(review_embeddings)
+        review_matrix = np.array(review_embeddings[:len(meaningful_reviews)])  # Use only meaningful reviews
         user_loves_vec = np.array(user_loves_embedding)
         feature_request_vec = np.array(feature_request_embedding)
         pain_point_vec = np.array(pain_point_embedding)
@@ -209,6 +233,8 @@ async def generate_summary(
         pain_point_vec = pain_point_vec / np.linalg.norm(pain_point_vec)
         
         review_norms = np.linalg.norm(review_matrix, axis=1, keepdims=True)
+        # Avoid division by zero
+        review_norms = np.where(review_norms == 0, 1e-10, review_norms)
         review_matrix_norm = review_matrix / review_norms
         
         # Calculate similarity scores for each category
@@ -216,30 +242,36 @@ async def generate_summary(
         feature_request_scores = np.dot(review_matrix_norm, feature_request_vec)
         pain_point_scores = np.dot(review_matrix_norm, pain_point_vec)
         
-        # Handle case of no reviews or minimal data
-        if len(review_texts) < 3:
-            logger.warning("Too few reviews for reliable summary generation")
-            return {
-                "user_loves": "Not enough reviews to determine what users love",
-                "feature_request": "Not enough reviews to identify feature requests",
-                "pain_point": "Not enough reviews to identify pain points",
-                "overall_summary": "Not enough reviews to generate an overall summary"
-            }
-        
-        # Select top reviews for each category (up to 15)
-        def get_top_reviews(scores, texts, n=15):
+        # Function to select top reviews with minimum similarity threshold
+        def get_top_reviews(scores, texts, n=15, min_threshold=0.2):
             if len(scores) == 0:
                 return []
-            top_indices = np.argsort(scores)[-min(n, len(scores)):]
-            return [texts[i] for i in top_indices]
+            
+            # Get indices of reviews with scores above threshold
+            valid_indices = np.where(scores > min_threshold)[0]
+            
+            # If no reviews meet the threshold, return empty list
+            if len(valid_indices) == 0:
+                return []
+                
+            # Sort the valid indices by score
+            sorted_indices = valid_indices[np.argsort(scores[valid_indices])[-min(n, len(valid_indices)):]]
+            
+            # Return the corresponding reviews
+            return [texts[i] for i in sorted_indices]
         
+        # Check similarity scores before collecting reviews
         top_user_loves = get_top_reviews(user_loves_scores, review_texts)
         top_feature_requests = get_top_reviews(feature_request_scores, review_texts)
         top_pain_points = get_top_reviews(pain_point_scores, review_texts)
         
+        # Log the number of matching reviews found for each category
+        logger.info(f"Found {len(top_user_loves)} user loves, {len(top_feature_requests)} feature requests, {len(top_pain_points)} pain points")
+        
         # Function to generate summary using OpenAI
         async def generate_category_summary(reviews, category_name):
-            if not reviews:
+            # If no matching reviews found, return appropriate message
+            if not reviews or len(reviews) < 2:
                 return f"No clear {category_name} identified in the reviews"
             
             # Take a maximum of 15 reviews to avoid token limits
@@ -250,40 +282,56 @@ async def generate_summary(
             
             prompt_templates = {
                 "user_loves": f"""
-                Below are customer reviews that indicate features or aspects users love about the product:
+                Below are {len(sample_reviews)} customer reviews that indicate features or aspects users love about the product:
                 
                 {combined_reviews}
                 
-                Based only on these reviews, summarize in ONE concise sentence what users love most about the product. 
-                Focus on concrete features or aspects, not general satisfaction.
+                Based ONLY on these specific reviews, summarize in ONE concise sentence what users love most about the product.
+                Focus on concrete features or aspects mentioned in the reviews, not general satisfaction.
+                
+                IMPORTANT: If the reviews don't clearly indicate what users love or contain too little information, 
+                respond with EXACTLY this phrase: "No clear indication of what users love in the provided reviews."
+                DO NOT make up or hallucinate information not present in the reviews.
                 """,
                 
                 "feature_request": f"""
-                Below are customer reviews that suggest features users would like to see added:
+                Below are {len(sample_reviews)} customer reviews that suggest features users would like to see added:
                 
                 {combined_reviews}
                 
-                Based only on these reviews, summarize in ONE concise sentence what feature or improvement users most commonly request.
-                Focus on clear feature requests, not general complaints.
+                Based ONLY on these specific reviews, summarize in ONE concise sentence what feature or improvement users most commonly request.
+                Focus on clear feature requests explicitly mentioned in the reviews, not general complaints.
+                
+                IMPORTANT: If the reviews don't clearly indicate feature requests or contain too little information, 
+                respond with EXACTLY this phrase: "No clear feature requests identified in the provided reviews."
+                DO NOT make up or hallucinate information not present in the reviews.
                 """,
                 
                 "pain_point": f"""
-                Below are customer reviews that highlight pain points or issues:
+                Below are {len(sample_reviews)} customer reviews that highlight pain points or issues:
                 
                 {combined_reviews}
                 
-                Based only on these reviews, summarize in ONE concise sentence what is the biggest pain point or issue users are experiencing.
-                Focus on specific problems that need addressing, not general dissatisfaction.
+                Based ONLY on these specific reviews, summarize in ONE concise sentence what is the biggest pain point or issue users are experiencing.
+                Focus on specific problems explicitly mentioned in the reviews, not general dissatisfaction.
+                
+                IMPORTANT: If the reviews don't clearly indicate pain points or contain too little information, 
+                respond with EXACTLY this phrase: "No clear pain points identified in the provided reviews."
+                DO NOT make up or hallucinate information not present in the reviews.
                 """,
                 
                 "overall_summary": f"""
-                Below are selected customer reviews covering what users love, requested features, and pain points:
+                Below are {len(sample_reviews)} selected customer reviews covering what users love, requested features, and pain points:
                 
                 {combined_reviews}
                 
-                Provide a comprehensive yet concise summary (approximately 50 words) of the overall customer sentiment, 
-                key strengths, major pain points, and most wanted features based on these reviews.
-                Focus on concrete, actionable insights that would help product managers prioritize improvements.
+                ONLY if there is sufficient meaningful feedback in these reviews, provide a comprehensive yet concise summary 
+                (approximately 50 words) of the overall customer sentiment, key strengths, major pain points, and most wanted 
+                features based EXCLUSIVELY on these specific reviews.
+                
+                IMPORTANT: If the reviews contain insufficient meaningful feedback or are too sparse, 
+                respond with EXACTLY this phrase: "Insufficient meaningful feedback to generate an overall summary."
+                DO NOT make up or hallucinate information not present in the reviews.
                 """
             }
             
@@ -291,10 +339,10 @@ async def generate_summary(
                 response = client.chat.completions.create(
                     model="gpt-4.1-mini",
                     messages=[
-                        {"role": "system", "content": "You are a customer insight specialist who extracts clear, actionable insights from reviews."},
+                        {"role": "system", "content": "You are a customer insight specialist who extracts clear, actionable insights from reviews. You NEVER make up information that isn't explicitly present in the reviews. If there isn't sufficient information, you clearly state that."},
                         {"role": "user", "content": prompt_templates[category_name]}
                     ],
-                    temperature=0.3,
+                    temperature=0.2,  # Lower temperature to reduce creativity
                     max_tokens=100
                 )
                 
@@ -317,17 +365,20 @@ async def generate_summary(
         feature_request_summary = await feature_request_summary_task
         pain_point_summary = await pain_point_summary_task
         
-        # Create a combined set of reviews for overall summary (10 from each category)
+        # Create a combined set of reviews for overall summary (up to 10 from each category)
         overall_reviews = []
         if top_user_loves:
-            overall_reviews.extend(top_user_loves[:10])
+            overall_reviews.extend(top_user_loves[:min(10, len(top_user_loves))])
         if top_feature_requests:
-            overall_reviews.extend(top_feature_requests[:10])
+            overall_reviews.extend(top_feature_requests[:min(10, len(top_feature_requests))])
         if top_pain_points:
-            overall_reviews.extend(top_pain_points[:10])
+            overall_reviews.extend(top_pain_points[:min(10, len(top_pain_points))])
         
-        # Generate overall summary using the combined reviews
-        overall_summary = await generate_category_summary(overall_reviews, "overall_summary")
+        # Only generate overall summary if we have enough meaningful data
+        if len(overall_reviews) >= 5:
+            overall_summary = await generate_category_summary(overall_reviews, "overall_summary")
+        else:
+            overall_summary = "Insufficient meaningful feedback to generate an overall summary"
         
         # Return the summaries
         return {
