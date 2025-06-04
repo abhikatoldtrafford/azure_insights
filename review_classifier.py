@@ -156,114 +156,119 @@ async def convert_file_to_csv(
         mode: Mode for extraction (extract/generate/auto)
         
     Returns:
-        CSV content as string
+        CSV content as a string
         
     Raises:
-        FileConversionError: If conversion fails
+        FileConversionError: If conversion fails at any point
     """
     try:
-        # Create form data
-        form_data = aiohttp.FormData()
-        
-        # Add file with proper content type
-        content_type = mimetypes.guess_type(filename)[0] or 'application/octet-stream'
-        form_data.add_field(
-            'file',
-            file_content,
-            filename=filename,
-            content_type=content_type
-        )
-        
-        # Add other parameters
-        form_data.add_field('mode', mode)
-        form_data.add_field('output_format', 'csv')  # Always request CSV format
-        
-        # Add prompt if provided
-        if prompt:
-            form_data.add_field('prompt', prompt)
-        else:
-            # Default prompt with specific column names as requested
-            default_prompt = """
-            Extract customer feedback/reviews from this document.
-            Structure the data with these specific columns:
-            - user: Customer name or reviewer identifier
-            - review_text: The actual feedback or review content
-            - date: When the review was submitted
-            - source: Where the review came from (platform, channel, etc.)
-            - star_rating: Numerical rating (1-5 stars) or sentiment score
-            
-            Focus on extracting all customer opinions, comments, and feedback.
-            If certain fields are not available, use 'N/A' as the value.
-            """
-            form_data.add_field('prompt', default_prompt.strip())
-        
-        # Request specific columns
-        form_data.add_field('columns', 'user,review_text,date,source,star_rating')
-        
-        # Make the API call with timeout and retries
         timeout = aiohttp.ClientTimeout(total=API_TIMEOUT)
-        
+
         async with aiohttp.ClientSession(timeout=timeout) as session:
             for attempt in range(3):  # Retry up to 3 times
+                # Rebuild FormData each try (cannot reuse a consumed FormData)
+                form_data = aiohttp.FormData()
+                form_data.add_field(
+                    "file",
+                    file_content,
+                    filename=filename,
+                    content_type=mimetypes.guess_type(filename)[0] or "application/octet-stream"
+                )
+                form_data.add_field("mode", mode)
+                form_data.add_field("output_format", "csv")
+                if prompt:
+                    form_data.add_field("prompt", prompt)
+                else:
+                    default_prompt = """
+                    Extract customer feedback/reviews from this document.
+                    Structure the data with these specific columns:
+                    - user: Customer name or reviewer identifier
+                    - review_text: The actual feedback or review content
+                    - date: When the review was submitted
+                    - source: Where the review came from (platform, channel, etc.)
+                    - star_rating: Numerical rating (1-5 stars) or sentiment score
+
+                    Focus on extracting all customer opinions, comments, and feedback.
+                    If certain fields are not available, use 'N/A' as the value.
+                    """
+                    form_data.add_field("prompt", default_prompt.strip())
+
+                form_data.add_field("columns", "user,review_text,date,source,star_rating")
+
+                logger.info(f"Calling extract-reviews API (attempt {attempt + 1}/3) for file: {filename}")
+
                 try:
-                    logger.info(f"Calling extract-reviews API (attempt {attempt + 1}/3) for file: {filename}")
-                    
-                    async with session.post(
-                        EXTRACT_REVIEWS_API_URL,
-                        data=form_data
-                    ) as response:
-                        if response.status == 200:
-                            # Check content type of response
-                            content_type = response.headers.get('Content-Type', '')
-                            
-                            # The API returns CSV as text
-                            if 'text/csv' in content_type or 'text/plain' in content_type:
-                                csv_content = await response.text()
-                            else:
-                                # If binary response (shouldn't happen for CSV), decode it
-                                content_bytes = await response.read()
-                                csv_content = content_bytes.decode('utf-8')
-                            
-                            # Validate we got actual CSV content
-                            if not csv_content or not csv_content.strip():
-                                raise FileConversionError("API returned empty CSV content")
-                            
-                            # Quick validation - check if it looks like CSV
-                            lines = csv_content.strip().split('\n')
-                            if len(lines) < 2:  # At least header + 1 row
-                                raise FileConversionError("CSV content appears to be invalid (too few lines)")
-                            
-                            logger.info(f"Successfully converted {filename} to CSV ({len(csv_content)} characters, {len(lines)} lines)")
-                            return csv_content
-                            
-                        else:
-                            error_text = await response.text()
-                            logger.error(f"API error (status {response.status}): {error_text}")
-                            
-                            if attempt == 2:  # Last attempt
+                    async with session.post(EXTRACT_REVIEWS_API_URL, data=form_data) as resp:
+                        # If the extract-reviews endpoint always returns JSON:
+                        if resp.status != 200:
+                            error_text = await resp.text()
+                            logger.error(f"API error (status {resp.status}): {error_text}")
+                            if attempt == 2:
                                 raise FileConversionError(
-                                    f"Failed to convert file after 3 attempts. Status: {response.status}, Error: {error_text}"
+                                    f"Failed to convert file after 3 attempts. "
+                                    f"Status: {resp.status}, Error: {error_text}"
                                 )
-                            
-                            # Wait before retry
-                            await asyncio.sleep(2 ** attempt)  # Exponential backoff
-                            
+                            await asyncio.sleep(2 ** attempt)
+                            continue
+
+                        # Parse JSON envelope
+                        try:
+                            payload = await resp.json()
+                        except Exception:
+                            raise FileConversionError("Failed to parse JSON from API response")
+
+                        if payload.get("status") != "success":
+                            msg = payload.get("message", "Unknown API error")
+                            raise FileConversionError(f"API reported failure: {msg}")
+
+                        download_url = payload.get("download_url")
+                        if not download_url:
+                            raise FileConversionError("No download_url in API response")
+
+                    # ── Second request: fetch the actual CSV ──
+                    async with session.get(download_url) as csv_resp:
+                        if csv_resp.status != 200:
+                            error_text = await csv_resp.text()
+                            raise FileConversionError(
+                                f"CSV download failed (status {csv_resp.status}): {error_text}"
+                            )
+                        csv_content = await csv_resp.text()
+
+                    # ── Validate the CSV content ──
+                    if not csv_content.strip():
+                        raise FileConversionError("Downloaded CSV content is empty")
+
+                    lines = csv_content.strip().splitlines()
+                    if len(lines) < 2:  # Expect at least header + 1 row
+                        raise FileConversionError("Downloaded CSV appears invalid (too few lines)")
+
+                    logger.info(
+                        f"Successfully converted {filename} to CSV ({len(csv_content)} chars, {len(lines)} lines)"
+                    )
+                    return csv_content
+
                 except asyncio.TimeoutError:
                     logger.error(f"Timeout on attempt {attempt + 1}")
                     if attempt == 2:
                         raise FileConversionError(f"API timeout after {API_TIMEOUT} seconds")
                     await asyncio.sleep(2 ** attempt)
-                    
+
                 except aiohttp.ClientError as e:
-                    logger.error(f"Client error on attempt {attempt + 1}: {str(e)}")
+                    logger.error(f"Client error on attempt {attempt + 1}: {e}")
                     if attempt == 2:
                         raise FileConversionError(f"Network error: {str(e)}")
                     await asyncio.sleep(2 ** attempt)
-                    
-    except Exception as e:
-        logger.error(f"Error converting file {filename}: {str(e)}")
-        raise FileConversionError(f"Failed to convert file: {str(e)}")
 
+        # If we exit the loop without returning, raise a generic error
+        raise FileConversionError("Failed to convert file after all retries")
+
+    except FileConversionError:
+        # Re-raise our custom exception without modification
+        raise
+    except Exception as e:
+        # Catch anything unexpected
+        logger.error(f"Error converting file {filename}: {e}")
+        raise FileConversionError(f"Failed to convert file: {e}")
 async def generate_summary(
     client: AzureOpenAI,
     review_embeddings: List[List[float]],
