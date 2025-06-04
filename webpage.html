@@ -1,0 +1,1655 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Customer Feedback Analysis API</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            /* Modern dark theme with professional colors */
+            --bg-primary: #0f0f14;
+            --bg-secondary: #1a1a23;
+            --bg-tertiary: #252530;
+            --bg-card: #1e1e28;
+            --text-primary: #e8e8ea;
+            --text-secondary: #a8a8b2;
+            --accent: #5b7fff;
+            --accent-hover: #4567ff;
+            --border: #3a3a46;
+            --shadow: rgba(0, 0, 0, 0.4);
+            --error: #ff5757;
+            --warning: #ffb857;
+            --info: #57c4ff;
+            --success: #57ff8b;
+            --positive: #4ade80;
+            --negative: #f87171;
+            --neutral: #94a3b8;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            line-height: 1.6;
+            color: var(--text-primary);
+            background-color: var(--bg-primary);
+            overflow-x: hidden;
+        }
+
+        /* Header */
+        .header {
+            background-color: var(--bg-secondary);
+            border-bottom: 1px solid var(--border);
+            padding: 16px 24px;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            backdrop-filter: blur(10px);
+            background-color: rgba(26, 26, 35, 0.95);
+        }
+
+        .header-content {
+            max-width: 1400px;
+            margin: 0 auto;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 16px;
+        }
+
+        .logo {
+            font-size: 24px;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            background: linear-gradient(135deg, var(--accent), #8b5cf6);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .nav-tabs {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        .nav-tab {
+            padding: 10px 24px;
+            background-color: transparent;
+            border: none;
+            border-radius: 25px;
+            color: var(--text-secondary);
+            cursor: pointer;
+            transition: all 0.3s;
+            font-size: 14px;
+            font-weight: 500;
+            position: relative;
+        }
+
+        .nav-tab:hover {
+            color: var(--text-primary);
+            background-color: rgba(91, 127, 255, 0.1);
+        }
+
+        .nav-tab.active {
+            background-color: var(--accent);
+            color: white;
+        }
+
+        /* Main Container */
+        .main-container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 24px;
+        }
+
+        /* Tab Content */
+        .tab-content {
+            display: none;
+            animation: fadeIn 0.4s ease-out;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        @keyframes fadeIn {
+            from { 
+                opacity: 0; 
+                transform: translateY(20px); 
+            }
+            to { 
+                opacity: 1; 
+                transform: translateY(0); 
+            }
+        }
+
+        /* Common Styles */
+        .section {
+            background: linear-gradient(145deg, var(--bg-secondary), var(--bg-card));
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 32px;
+            margin-bottom: 24px;
+            box-shadow: 0 8px 32px var(--shadow);
+        }
+
+        .section-title {
+            font-size: 24px;
+            font-weight: 600;
+            margin-bottom: 24px;
+            background: linear-gradient(135deg, var(--text-primary), var(--text-secondary));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .form-group {
+            margin-bottom: 24px;
+        }
+
+        .form-label {
+            display: block;
+            margin-bottom: 10px;
+            font-weight: 500;
+            color: var(--text-secondary);
+            font-size: 14px;
+        }
+
+        .form-control {
+            width: 100%;
+            padding: 14px 18px;
+            background-color: var(--bg-tertiary);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            color: var(--text-primary);
+            font-size: 15px;
+            transition: all 0.3s;
+        }
+
+        .form-control:focus {
+            outline: none;
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px rgba(91, 127, 255, 0.1);
+        }
+
+        textarea.form-control {
+            resize: vertical;
+            min-height: 120px;
+            font-family: inherit;
+        }
+
+        .btn {
+            padding: 14px 28px;
+            background-color: var(--accent);
+            color: white;
+            border: none;
+            border-radius: 12px;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .btn:hover:not(:disabled) {
+            background-color: var(--accent-hover);
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(91, 127, 255, 0.4);
+        }
+
+        .btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .btn-secondary {
+            background-color: var(--bg-tertiary);
+            color: var(--text-primary);
+            border: 1px solid var(--border);
+        }
+
+        .btn-secondary:hover:not(:disabled) {
+            background-color: #3a3a50;
+            border-color: var(--accent);
+        }
+
+        .btn-small {
+            padding: 8px 16px;
+            font-size: 13px;
+        }
+
+        /* File Upload Area */
+        .file-upload-area {
+            border: 2px dashed var(--border);
+            border-radius: 16px;
+            padding: 48px;
+            text-align: center;
+            transition: all 0.3s;
+            cursor: pointer;
+            background-color: rgba(37, 37, 48, 0.3);
+        }
+
+        .file-upload-area:hover {
+            border-color: var(--accent);
+            background-color: rgba(91, 127, 255, 0.05);
+        }
+
+        .file-upload-area.dragging {
+            border-color: var(--accent);
+            background-color: rgba(91, 127, 255, 0.1);
+        }
+
+        .file-info {
+            margin-top: 20px;
+            padding: 16px;
+            background-color: var(--bg-tertiary);
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .file-details {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        /* Analysis Results */
+        .analysis-results {
+            margin-top: 32px;
+        }
+
+        .key-area-card {
+            background-color: var(--bg-tertiary);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 16px;
+            transition: all 0.3s;
+        }
+
+        .key-area-card:hover {
+            border-color: var(--accent);
+            box-shadow: 0 4px 16px rgba(91, 127, 255, 0.1);
+        }
+
+        .key-area-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: start;
+            margin-bottom: 12px;
+        }
+
+        .key-area-title {
+            font-size: 18px;
+            font-weight: 600;
+            color: var(--accent);
+        }
+
+        .user-count {
+            background-color: var(--bg-primary);
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 14px;
+            font-weight: 500;
+        }
+
+        .customer-problem {
+            color: var(--text-secondary);
+            margin-bottom: 16px;
+        }
+
+        .feedback-samples {
+            margin-top: 16px;
+            max-height: 200px;
+            overflow-y: auto;
+            padding: 12px;
+            background-color: var(--bg-primary);
+            border-radius: 8px;
+            font-size: 14px;
+        }
+
+        .feedback-item {
+            padding: 8px 0;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .feedback-item:last-child {
+            border-bottom: none;
+        }
+
+        .sentiment-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 500;
+            margin-left: 8px;
+        }
+
+        .sentiment-positive {
+            background-color: rgba(87, 255, 139, 0.2);
+            color: var(--positive);
+        }
+
+        .sentiment-negative {
+            background-color: rgba(255, 87, 87, 0.2);
+            color: var(--negative);
+        }
+
+        .sentiment-neutral {
+            background-color: rgba(148, 163, 184, 0.2);
+            color: var(--neutral);
+        }
+
+        /* Insight Summary */
+        .insight-summary {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin: 32px 0;
+        }
+
+        .insight-card {
+            background-color: var(--bg-tertiary);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 20px;
+        }
+
+        .insight-icon {
+            font-size: 24px;
+            margin-bottom: 8px;
+        }
+
+        .insight-title {
+            font-size: 14px;
+            color: var(--text-secondary);
+            margin-bottom: 8px;
+        }
+
+        .insight-content {
+            font-size: 15px;
+            line-height: 1.6;
+        }
+
+        /* Single Review Classification */
+        .classification-result {
+            background-color: var(--bg-tertiary);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 24px;
+            margin-top: 24px;
+        }
+
+        .classification-header {
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 16px;
+            color: var(--accent);
+        }
+
+        .classification-details {
+            display: grid;
+            gap: 16px;
+        }
+
+        .classification-field {
+            display: flex;
+            align-items: start;
+            gap: 12px;
+        }
+
+        .field-label {
+            font-weight: 500;
+            color: var(--text-secondary);
+            min-width: 140px;
+        }
+
+        .field-value {
+            flex: 1;
+        }
+
+        /* Documentation Styles */
+        .doc-section {
+            margin-bottom: 48px;
+        }
+
+        .doc-endpoint {
+            background-color: var(--bg-tertiary);
+            border-radius: 12px;
+            padding: 24px;
+            margin-bottom: 24px;
+            border: 1px solid var(--border);
+        }
+
+        .endpoint-header {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 16px;
+        }
+
+        .method-badge {
+            padding: 6px 12px;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 700;
+            text-transform: uppercase;
+        }
+
+        .method-get {
+            background-color: #10b981;
+            color: white;
+        }
+
+        .method-post {
+            background-color: #3b82f6;
+            color: white;
+        }
+
+        .endpoint-path {
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 16px;
+            color: var(--text-primary);
+        }
+
+        .endpoint-description {
+            color: var(--text-secondary);
+            margin-bottom: 20px;
+            line-height: 1.6;
+        }
+
+        .code-block {
+            background-color: var(--bg-primary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 20px;
+            margin: 16px 0;
+            position: relative;
+        }
+
+        .code-block pre {
+            margin: 0;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 14px;
+            line-height: 1.6;
+            color: #e4e4e7;
+            overflow-x: auto;
+        }
+
+        .code-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .code-title {
+            font-weight: 600;
+            color: var(--accent);
+            font-size: 14px;
+        }
+
+        .copy-btn {
+            padding: 6px 16px;
+            font-size: 12px;
+            background-color: var(--bg-tertiary);
+            border: 1px solid var(--border);
+        }
+
+        .copy-btn:hover {
+            background-color: var(--accent);
+            border-color: var(--accent);
+        }
+
+        .params-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 16px 0;
+        }
+
+        .params-table th,
+        .params-table td {
+            text-align: left;
+            padding: 12px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .params-table th {
+            font-weight: 600;
+            color: var(--accent);
+            background-color: var(--bg-primary);
+        }
+
+        .param-required {
+            color: var(--error);
+            font-weight: 600;
+        }
+
+        .param-optional {
+            color: var(--text-secondary);
+        }
+
+        /* API Testing */
+        .api-test-section {
+            background-color: var(--bg-primary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 20px;
+            margin-top: 16px;
+        }
+
+        .test-form {
+            margin-bottom: 16px;
+        }
+
+        .test-form-row {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 12px;
+            align-items: center;
+        }
+
+        .test-form-row label {
+            min-width: 140px;
+            font-size: 14px;
+            color: var(--text-secondary);
+        }
+
+        .test-form-row input,
+        .test-form-row select,
+        .test-form-row textarea {
+            flex: 1;
+            padding: 8px 12px;
+            background-color: var(--bg-tertiary);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            color: var(--text-primary);
+            font-size: 14px;
+        }
+
+        .test-response {
+            background-color: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 16px;
+            margin-top: 16px;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 14px;
+            max-height: 400px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+        }
+
+        /* Loading Spinner */
+        .spinner {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid rgba(255, 255, 255, 0.1);
+            border-radius: 50%;
+            border-top-color: var(--accent);
+            animation: spin 1s ease-in-out infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* Toast Notifications */
+        .toast {
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            padding: 16px 24px;
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-size: 14px;
+            font-weight: 500;
+            animation: toastSlide 0.3s ease-out;
+            z-index: 1000;
+            box-shadow: 0 6px 20px var(--shadow);
+        }
+
+        @keyframes toastSlide {
+            from {
+                transform: translateX(400px);
+            }
+            to {
+                transform: translateX(0);
+            }
+        }
+
+        .toast-success {
+            background-color: var(--success);
+            color: #0a1e0d;
+        }
+
+        .toast-error {
+            background-color: var(--error);
+            color: white;
+        }
+
+        .toast-info {
+            background-color: var(--info);
+            color: #0a1e2b;
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .header-content {
+                flex-direction: column;
+                align-items: stretch;
+                gap: 12px;
+            }
+
+            .nav-tabs {
+                justify-content: center;
+                width: 100%;
+            }
+
+            .nav-tab {
+                padding: 8px 16px;
+                font-size: 13px;
+            }
+
+            .section {
+                padding: 20px;
+            }
+
+            .test-form-row {
+                flex-direction: column;
+                align-items: stretch;
+            }
+
+            .test-form-row label {
+                min-width: auto;
+                margin-bottom: 4px;
+            }
+
+            .insight-summary {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: var(--bg-secondary);
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: var(--bg-tertiary);
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: #444;
+        }
+
+        /* Utility Classes */
+        .mt-3 { margin-top: 20px; }
+        .mb-3 { margin-bottom: 20px; }
+        .text-center { text-align: center; }
+        .text-small { font-size: 12px; }
+        .text-muted { color: var(--text-secondary); }
+        .d-none { display: none; }
+        .toggle-btn {
+            font-size: 12px;
+            color: var(--accent);
+            cursor: pointer;
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+    <!-- Header -->
+    <header class="header">
+        <div class="header-content">
+            <div class="logo">
+                <span>📊</span>
+                <span>Customer Feedback Analysis API</span>
+            </div>
+            <nav class="nav-tabs">
+                <button class="nav-tab active" onclick="switchTab('analyze')">
+                    📈 Analyze Feedback
+                </button>
+                <button class="nav-tab" onclick="switchTab('classify')">
+                    🏷️ Classify Review
+                </button>
+                <button class="nav-tab" onclick="switchTab('docs')">
+                    📚 API Documentation
+                </button>
+            </nav>
+        </div>
+    </header>
+
+    <!-- Main Container -->
+    <div class="main-container">
+        <!-- Analyze Feedback Tab -->
+        <div id="analyze-tab" class="tab-content active">
+            <div class="section">
+                <h2 class="section-title">Analyze Customer Feedback</h2>
+                <p class="text-muted mb-3">Upload your CSV or Excel file containing customer feedback to get AI-powered insights, categorization, and sentiment analysis.</p>
+
+                <div class="form-group">
+                    <label class="form-label">Upload Feedback File</label>
+                    <div class="file-upload-area" onclick="document.getElementById('feedbackFile').click()">
+                        <p style="font-size: 48px; margin-bottom: 8px;">📁</p>
+                        <p style="font-weight: 600; font-size: 18px;">Click to upload or drag & drop</p>
+                        <p class="text-small text-muted">Supports CSV and Excel files (.csv, .xlsx, .xls)</p>
+                    </div>
+                    <input type="file" id="feedbackFile" style="display: none;" 
+                           accept=".csv,.xlsx,.xls,.xlsm"
+                           onchange="handleFeedbackFile(event)">
+                    <div id="fileInfo" style="display: none;"></div>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label">Source Override (Optional)</label>
+                    <input type="text" class="form-control" id="sourceOverride" 
+                           placeholder="e.g., Amazon, App Store, Survey">
+                    <p class="text-small text-muted mt-1">Leave empty to use source from file</p>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label">Include Raw Feedback in Results</label>
+                    <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                        <input type="checkbox" id="returnRawFeedback" checked style="width: 18px; height: 18px;">
+                        <span>Return individual feedback items with analysis</span>
+                    </label>
+                </div>
+
+                <button class="btn" onclick="analyzeFeedback()" id="analyzeBtn" disabled>
+                    <span>Analyze Feedback</span>
+                    <span>🔍</span>
+                </button>
+
+                <!-- Results Section -->
+                <div id="analysisResults" class="analysis-results d-none">
+                    <!-- Insight Summary -->
+                    <div id="insightSummary" class="insight-summary"></div>
+
+                    <!-- Key Areas -->
+                    <h3 style="margin: 32px 0 16px; font-size: 20px;">Key Problem Areas</h3>
+                    <div id="keyAreas"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Classify Single Review Tab -->
+        <div id="classify-tab" class="tab-content">
+            <div class="section">
+                <h2 class="section-title">Classify Single Review</h2>
+                <p class="text-muted mb-3">Classify a single customer review against existing categories or create new ones.</p>
+
+                <div class="form-group">
+                    <label class="form-label">Customer Review</label>
+                    <textarea class="form-control" id="singleReview" 
+                              placeholder="Enter the customer review text here..."
+                              rows="4"></textarea>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label">Existing Categories (JSON)</label>
+                    <textarea class="form-control" id="existingCategories" 
+                              placeholder='[{"key_area": "App Performance", "customer_problem": "App crashes frequently during usage"}]'
+                              rows="6"></textarea>
+                    <p class="text-small text-muted mt-1">Paste your existing analysis results or leave empty to create new categories</p>
+                </div>
+
+                <button class="btn" onclick="classifySingleReview()">
+                    <span>Classify Review</span>
+                    <span>🏷️</span>
+                </button>
+
+                <!-- Classification Result -->
+                <div id="classificationResult" class="classification-result d-none">
+                    <h3 class="classification-header">Classification Result</h3>
+                    <div class="classification-details">
+                        <div class="classification-field">
+                            <span class="field-label">Key Area:</span>
+                            <span class="field-value" id="classKeyArea"></span>
+                        </div>
+                        <div class="classification-field">
+                            <span class="field-label">Customer Problem:</span>
+                            <span class="field-value" id="classCustomerProblem"></span>
+                        </div>
+                        <div class="classification-field">
+                            <span class="field-label">Sentiment Score:</span>
+                            <span class="field-value">
+                                <span id="classSentiment"></span>
+                                <span id="classSentimentBadge" class="sentiment-badge"></span>
+                            </span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- API Documentation Tab -->
+        <div id="docs-tab" class="tab-content">
+            <div class="section">
+                <h2 class="section-title">API Documentation & Testing</h2>
+                <p class="text-muted mb-3">Complete API reference with live testing capability</p>
+
+                <!-- Quick Start -->
+                <div class="doc-section">
+                    <h3 style="font-size: 20px; margin-bottom: 20px;">🚀 Quick Start</h3>
+                    <div class="doc-endpoint">
+                        <h4 style="margin-bottom: 12px;">Base URL</h4>
+                        <pre><span id="baseUrlDisplay">${window.location.origin}</span></pre>
+                        
+                        <h4 style="margin: 20px 0 12px;">Key Features</h4>
+                        <ul style="line-height: 1.8; color: var(--text-secondary); margin-left: 20px;">
+                            <li>AI-powered feedback categorization using GPT-4</li>
+                            <li>Sentiment analysis with scores from -1 to 1</li>
+                            <li>Automatic key problem area identification</li>
+                            <li>Support for CSV and Excel files</li>
+                            <li>Single review classification</li>
+                            <li>Insight summaries (what users love, feature requests, pain points)</li>
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Analyze Feedback Endpoint -->
+                <div class="doc-section">
+                    <h3 style="font-size: 20px; margin-bottom: 20px;">📊 Feedback Analysis</h3>
+                    
+                    <div class="doc-endpoint">
+                        <div class="endpoint-header">
+                            <span class="method-badge method-post">POST</span>
+                            <span class="endpoint-path">/analyze-feedback</span>
+                        </div>
+                        <p class="endpoint-description">
+                            Analyzes customer feedback from CSV or Excel files. Automatically identifies key problem areas, 
+                            classifies feedback, calculates sentiment scores, and generates insight summaries.
+                        </p>
+                        
+                        <h4 class="text-small" style="margin: 20px 0 12px;">Parameters</h4>
+                        <table class="params-table">
+                            <thead>
+                                <tr>
+                                    <th>Parameter</th>
+                                    <th>Type</th>
+                                    <th>Required</th>
+                                    <th>Description</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td><code>file</code></td>
+                                    <td>file</td>
+                                    <td class="param-required">Required</td>
+                                    <td>CSV or Excel file containing feedback</td>
+                                </tr>
+                                <tr>
+                                    <td><code>return_raw_feedback</code></td>
+                                    <td>boolean</td>
+                                    <td class="param-optional">Optional</td>
+                                    <td>Include individual feedback items (default: false)</td>
+                                </tr>
+                                <tr>
+                                    <td><code>source</code></td>
+                                    <td>string</td>
+                                    <td class="param-optional">Optional</td>
+                                    <td>Override source column value</td>
+                                </tr>
+                            </tbody>
+                        </table>
+
+                        <!-- Live Testing Section -->
+                        <div class="api-test-section">
+                            <h4 style="margin-bottom: 16px; color: var(--accent);">🧪 Live Test</h4>
+                            <div class="test-form">
+                                <div class="test-form-row">
+                                    <label>File:</label>
+                                    <input type="file" id="test-analyze-file" accept=".csv,.xlsx,.xls">
+                                </div>
+                                <div class="test-form-row">
+                                    <label>Return Raw:</label>
+                                    <select id="test-analyze-raw">
+                                        <option value="true">Yes</option>
+                                        <option value="false">No</option>
+                                    </select>
+                                </div>
+                                <div class="test-form-row">
+                                    <label>Source:</label>
+                                    <input type="text" id="test-analyze-source" placeholder="Optional">
+                                </div>
+                                <div class="test-actions mt-3">
+                                    <button class="btn btn-small" onclick="testAnalyzeFeedback()">Test Endpoint</button>
+                                    <button class="btn btn-secondary btn-small" onclick="copyAsCode('analyze-feedback')">Copy as cURL</button>
+                                </div>
+                            </div>
+                            <div id="test-analyze-response" class="test-response" style="display: none;"></div>
+                        </div>
+
+                        <div class="code-block">
+                            <div class="code-header">
+                                <span class="code-title">cURL Example</span>
+                                <button class="btn copy-btn" onclick="copyCode('analyze-curl')">Copy</button>
+                            </div>
+                            <pre id="analyze-curl">curl -X POST "<span class="base-url-placeholder">${window.location.origin}</span>/analyze-feedback" \
+  -F "file=@customer_feedback.csv" \
+  -F "return_raw_feedback=true" \
+  -F "source=App Store"</pre>
+                        </div>
+
+                        <div class="code-block">
+                            <div class="code-header">
+                                <span class="code-title">Response Example</span>
+                            </div>
+                            <pre>{
+  "analysis_results": [
+    {
+      "key_area": "App Performance",
+      "customer_problem": "App crashes frequently during extended usage sessions",
+      "number_of_users": 45,
+      "raw_feedbacks": [
+        {
+          "Customer Feedback": "The app keeps crashing when I try to view reports",
+          "sentiment_score": -0.8,
+          "Received": "2024-01-15",
+          "Name": "John Doe",
+          "Source": "App Store"
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "total_feedback_items": 250,
+    "total_key_areas": 8
+  },
+  "insight_summary": {
+    "user_loves": "Users appreciate the intuitive interface and real-time data updates",
+    "feature_request": "Most requested feature is offline mode for accessing reports",
+    "pain_point": "App performance issues and frequent crashes are the biggest concerns"
+  }
+}</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Classify Single Review Endpoint -->
+                <div class="doc-section">
+                    <h3 style="font-size: 20px; margin-bottom: 20px;">🏷️ Single Review Classification</h3>
+                    
+                    <div class="doc-endpoint">
+                        <div class="endpoint-header">
+                            <span class="method-badge method-post">POST</span>
+                            <span class="endpoint-path">/classify-single-review</span>
+                        </div>
+                        <p class="endpoint-description">
+                            Classifies a single customer review against existing categories using GPT-4. 
+                            Returns the best matching category or creates a new one if needed, along with sentiment score.
+                        </p>
+                        
+                        <h4 class="text-small" style="margin: 20px 0 12px;">Parameters</h4>
+                        <table class="params-table">
+                            <thead>
+                                <tr>
+                                    <th>Parameter</th>
+                                    <th>Type</th>
+                                    <th>Required</th>
+                                    <th>Description</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td><code>review</code></td>
+                                    <td>string</td>
+                                    <td class="param-required">Required</td>
+                                    <td>The review text to classify</td>
+                                </tr>
+                                <tr>
+                                    <td><code>existing_json</code></td>
+                                    <td>string/JSON</td>
+                                    <td class="param-optional">Optional</td>
+                                    <td>Existing categories from previous analysis</td>
+                                </tr>
+                            </tbody>
+                        </table>
+
+                        <!-- Live Testing Section -->
+                        <div class="api-test-section">
+                            <h4 style="margin-bottom: 16px; color: var(--accent);">🧪 Live Test</h4>
+                            <div class="test-form">
+                                <div class="test-form-row">
+                                    <label>Review:</label>
+                                    <textarea id="test-classify-review" placeholder="The app crashes every time I try to upload a photo" rows="3"></textarea>
+                                </div>
+                                <div class="test-form-row">
+                                    <label>Existing JSON:</label>
+                                    <textarea id="test-classify-json" placeholder='[{"key_area": "App Performance", "customer_problem": "App crashes during usage"}]' rows="4"></textarea>
+                                </div>
+                                <div class="test-actions mt-3">
+                                    <button class="btn btn-small" onclick="testClassifyReview()">Test Endpoint</button>
+                                    <button class="btn btn-secondary btn-small" onclick="copyAsCode('classify-review')">Copy as cURL</button>
+                                </div>
+                            </div>
+                            <div id="test-classify-response" class="test-response" style="display: none;"></div>
+                        </div>
+
+                        <div class="code-block">
+                            <div class="code-header">
+                                <span class="code-title">cURL Example (JSON Body)</span>
+                                <button class="btn copy-btn" onclick="copyCode('classify-curl-json')">Copy</button>
+                            </div>
+                            <pre id="classify-curl-json">curl -X POST "<span class="base-url-placeholder">${window.location.origin}</span>/classify-single-review" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "review": "The app crashes every time I try to upload photos",
+    "existing_json": [
+      {
+        "key_area": "App Performance",
+        "customer_problem": "App crashes frequently during usage"
+      }
+    ]
+  }'</pre>
+                        </div>
+
+                        <div class="code-block">
+                            <div class="code-header">
+                                <span class="code-title">cURL Example (Form Data)</span>
+                                <button class="btn copy-btn" onclick="copyCode('classify-curl-form')">Copy</button>
+                            </div>
+                            <pre id="classify-curl-form">curl -X POST "<span class="base-url-placeholder">${window.location.origin}</span>/classify-single-review" \
+  -F "review=The app crashes every time I try to upload photos" \
+  -F 'existing_json=[{"key_area":"App Performance","customer_problem":"App crashes frequently"}]'</pre>
+                        </div>
+
+                        <div class="code-block">
+                            <div class="code-header">
+                                <span class="code-title">Response Example</span>
+                            </div>
+                            <pre>{
+  "key_area": "App Performance",
+  "customer_problem": "App crashes during photo upload operations",
+  "sentiment_score": -0.85
+}</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Best Practices -->
+                <div class="doc-section">
+                    <h3 style="font-size: 20px; margin-bottom: 20px;">📋 Best Practices</h3>
+                    
+                    <div class="doc-endpoint">
+                        <h4 style="margin-bottom: 16px;">Data Preparation</h4>
+                        <ul style="line-height: 1.8; color: var(--text-secondary); margin-left: 20px;">
+                            <li><strong>Column Detection:</strong> The API automatically detects feedback, rating, date, name, and source columns</li>
+                            <li><strong>5-Star Filter:</strong> Reviews with 5-star ratings are automatically excluded from problem analysis</li>
+                            <li><strong>Excel Support:</strong> Multi-sheet Excel files are processed, analyzing all sheets</li>
+                            <li><strong>Encoding:</strong> UTF-8 encoding is preferred, but the API handles various encodings</li>
+                        </ul>
+
+                        <h4 style="margin: 24px 0 16px;">Response Handling</h4>
+                        <ul style="line-height: 1.8; color: var(--text-secondary); margin-left: 20px;">
+                            <li><strong>Sentiment Scores:</strong> Range from -1 (very negative) to 1 (very positive)</li>
+                            <li><strong>Key Areas:</strong> Automatically identified and limited to most significant issues</li>
+                            <li><strong>Timeout:</strong> Large files may take up to 120 seconds to process</li>
+                            <li><strong>Rate Limits:</strong> Based on Azure OpenAI service quotas</li>
+                        </ul>
+
+                        <h4 style="margin: 24px 0 16px;">Error Handling</h4>
+                        <table class="params-table">
+                            <thead>
+                                <tr>
+                                    <th>Status Code</th>
+                                    <th>Meaning</th>
+                                    <th>Common Causes</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td>400</td>
+                                    <td>Bad Request</td>
+                                    <td>Invalid file format, missing required parameters</td>
+                                </tr>
+                                <tr>
+                                    <td>422</td>
+                                    <td>Unprocessable Entity</td>
+                                    <td>File contains no valid feedback data</td>
+                                </tr>
+                                <tr>
+                                    <td>500</td>
+                                    <td>Internal Server Error</td>
+                                    <td>Processing error, retry recommended</td>
+                                </tr>
+                                <tr>
+                                    <td>504</td>
+                                    <td>Gateway Timeout</td>
+                                    <td>Processing exceeded 120 seconds</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // API Configuration
+        const API_BASE_URL = window.location.origin;
+
+        // Application State
+        let state = {
+            feedbackFile: null,
+            analysisData: null,
+            lastClassification: null
+        };
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            setupEventListeners();
+            updateBaseUrlDisplay();
+        });
+
+        function updateBaseUrlDisplay() {
+            document.getElementById('baseUrlDisplay').textContent = API_BASE_URL;
+            document.querySelectorAll('.base-url-placeholder').forEach(el => {
+                el.textContent = API_BASE_URL;
+            });
+        }
+
+        // Tab Switching
+        function switchTab(tabName) {
+            document.querySelectorAll('.tab-content').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            
+            document.querySelectorAll('.nav-tab').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            
+            document.getElementById(`${tabName}-tab`).classList.add('active');
+            event.target.classList.add('active');
+        }
+
+        // ==========================
+        // Feedback Analysis Functions
+        // ==========================
+        
+        function handleFeedbackFile(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            state.feedbackFile = file;
+            document.getElementById('analyzeBtn').disabled = false;
+
+            // Show file info
+            const fileInfo = document.getElementById('fileInfo');
+            fileInfo.innerHTML = `
+                <div class="file-info">
+                    <div class="file-details">
+                        <span style="font-size: 24px;">📄</span>
+                        <div>
+                            <div style="font-weight: 600;">${file.name}</div>
+                            <div class="text-small text-muted">${formatFileSize(file.size)}</div>
+                        </div>
+                    </div>
+                    <button class="btn btn-secondary btn-small" onclick="removeFeedbackFile()">Remove</button>
+                </div>
+            `;
+            fileInfo.style.display = 'block';
+        }
+
+        function removeFeedbackFile() {
+            state.feedbackFile = null;
+            document.getElementById('feedbackFile').value = '';
+            document.getElementById('fileInfo').style.display = 'none';
+            document.getElementById('analyzeBtn').disabled = true;
+        }
+
+        async function analyzeFeedback() {
+            if (!state.feedbackFile) {
+                showToast('Please upload a feedback file', 'error');
+                return;
+            }
+
+            const btn = document.getElementById('analyzeBtn');
+            const originalText = btn.innerHTML;
+            btn.innerHTML = '<span class="spinner"></span> Analyzing...';
+            btn.disabled = true;
+
+            try {
+                const formData = new FormData();
+                formData.append('file', state.feedbackFile);
+                formData.append('return_raw_feedback', document.getElementById('returnRawFeedback').checked);
+                
+                const source = document.getElementById('sourceOverride').value.trim();
+                if (source) {
+                    formData.append('source', source);
+                }
+
+                const response = await fetch(`${API_BASE_URL}/analyze-feedback`, {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.detail || 'Analysis failed');
+                }
+
+                const data = await response.json();
+                state.analysisData = data;
+                
+                displayAnalysisResults(data);
+                showToast('Analysis completed successfully!', 'success');
+
+            } catch (error) {
+                showToast(`Error: ${error.message}`, 'error');
+                console.error('Analysis error:', error);
+            } finally {
+                btn.innerHTML = originalText;
+                btn.disabled = false;
+            }
+        }
+
+        function displayAnalysisResults(data) {
+            const resultsSection = document.getElementById('analysisResults');
+            resultsSection.classList.remove('d-none');
+
+            // Display Insight Summary
+            displayInsightSummary(data.insight_summary);
+
+            // Display Key Areas
+            displayKeyAreas(data.analysis_results);
+
+            // Scroll to results
+            resultsSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+
+        function displayInsightSummary(summary) {
+            const container = document.getElementById('insightSummary');
+            
+            container.innerHTML = `
+                <div class="insight-card">
+                    <div class="insight-icon">❤️</div>
+                    <div class="insight-title">What Users Love</div>
+                    <div class="insight-content">${summary.user_loves || 'No data available'}</div>
+                </div>
+                <div class="insight-card">
+                    <div class="insight-icon">💡</div>
+                    <div class="insight-title">Feature Requests</div>
+                    <div class="insight-content">${summary.feature_request || 'No data available'}</div>
+                </div>
+                <div class="insight-card">
+                    <div class="insight-icon">⚠️</div>
+                    <div class="insight-title">Main Pain Points</div>
+                    <div class="insight-content">${summary.pain_point || 'No data available'}</div>
+                </div>
+            `;
+        }
+
+        function displayKeyAreas(areas) {
+            const container = document.getElementById('keyAreas');
+            
+            container.innerHTML = areas.map((area, index) => {
+                const showRawFeedback = area.raw_feedbacks && area.raw_feedbacks.length > 0;
+                const feedbackId = `feedback-${index}`;
+                
+                return `
+                    <div class="key-area-card">
+                        <div class="key-area-header">
+                            <div>
+                                <div class="key-area-title">${area.key_area}</div>
+                                <div class="customer-problem">${area.customer_problem}</div>
+                            </div>
+                            <div class="user-count">${area.number_of_users} users</div>
+                        </div>
+                        ${showRawFeedback ? `
+                            <div style="margin-top: 12px;">
+                                <span class="toggle-btn" onclick="toggleFeedback('${feedbackId}')">
+                                    Show sample feedback
+                                </span>
+                            </div>
+                            <div id="${feedbackId}" class="feedback-samples d-none">
+                                ${area.raw_feedbacks.slice(0, 5).map(feedback => `
+                                    <div class="feedback-item">
+                                        ${feedback['Customer Feedback']}
+                                        ${getSentimentBadge(feedback.sentiment_score)}
+                                    </div>
+                                `).join('')}
+                                ${area.raw_feedbacks.length > 5 ? `
+                                    <div class="text-small text-muted mt-2">
+                                        ... and ${area.raw_feedbacks.length - 5} more
+                                    </div>
+                                ` : ''}
+                            </div>
+                        ` : ''}
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function toggleFeedback(feedbackId) {
+            const element = document.getElementById(feedbackId);
+            const toggle = event.target;
+            
+            if (element.classList.contains('d-none')) {
+                element.classList.remove('d-none');
+                toggle.textContent = 'Hide sample feedback';
+            } else {
+                element.classList.add('d-none');
+                toggle.textContent = 'Show sample feedback';
+            }
+        }
+
+        function getSentimentBadge(score) {
+            let className, text;
+            
+            if (score >= 0.2) {
+                className = 'sentiment-positive';
+                text = 'Positive';
+            } else if (score <= -0.2) {
+                className = 'sentiment-negative';
+                text = 'Negative';
+            } else {
+                className = 'sentiment-neutral';
+                text = 'Neutral';
+            }
+            
+            return `<span class="sentiment-badge ${className}">${text} (${score.toFixed(2)})</span>`;
+        }
+
+        // ==========================
+        // Single Review Classification
+        // ==========================
+        
+        async function classifySingleReview() {
+            const review = document.getElementById('singleReview').value.trim();
+            const existingJson = document.getElementById('existingCategories').value.trim();
+
+            if (!review) {
+                showToast('Please enter a review to classify', 'error');
+                return;
+            }
+
+            const btn = event.target;
+            const originalText = btn.innerHTML;
+            btn.innerHTML = '<span class="spinner"></span> Classifying...';
+            btn.disabled = true;
+
+            try {
+                const payload = {
+                    review: review
+                };
+
+                if (existingJson) {
+                    try {
+                        payload.existing_json = JSON.parse(existingJson);
+                    } catch (e) {
+                        throw new Error('Invalid JSON format for existing categories');
+                    }
+                }
+
+                const response = await fetch(`${API_BASE_URL}/classify-single-review`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(payload)
+                });
+
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.detail || 'Classification failed');
+                }
+
+                const data = await response.json();
+                state.lastClassification = data;
+                
+                displayClassificationResult(data);
+                showToast('Classification completed!', 'success');
+
+            } catch (error) {
+                showToast(`Error: ${error.message}`, 'error');
+                console.error('Classification error:', error);
+            } finally {
+                btn.innerHTML = originalText;
+                btn.disabled = false;
+            }
+        }
+
+        function displayClassificationResult(data) {
+            const resultDiv = document.getElementById('classificationResult');
+            resultDiv.classList.remove('d-none');
+
+            document.getElementById('classKeyArea').textContent = data.key_area;
+            document.getElementById('classCustomerProblem').textContent = data.customer_problem;
+            document.getElementById('classSentiment').textContent = data.sentiment_score.toFixed(3);
+            
+            const badge = document.getElementById('classSentimentBadge');
+            badge.innerHTML = getSentimentBadge(data.sentiment_score);
+
+            resultDiv.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+
+        // ==========================
+        // API Testing Functions
+        // ==========================
+
+        async function testAnalyzeFeedback() {
+            const file = document.getElementById('test-analyze-file').files[0];
+            const returnRaw = document.getElementById('test-analyze-raw').value;
+            const source = document.getElementById('test-analyze-source').value;
+            const responseDiv = document.getElementById('test-analyze-response');
+
+            if (!file) {
+                showToast('Please select a file to test', 'error');
+                return;
+            }
+
+            responseDiv.style.display = 'block';
+            responseDiv.textContent = 'Testing...';
+
+            try {
+                const formData = new FormData();
+                formData.append('file', file);
+                formData.append('return_raw_feedback', returnRaw);
+                if (source) formData.append('source', source);
+
+                const response = await fetch(`${API_BASE_URL}/analyze-feedback`, {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const data = await response.json();
+                responseDiv.textContent = JSON.stringify(data, null, 2);
+
+                if (response.ok) {
+                    showToast('Test successful!', 'success');
+                    // Store results for classification test
+                    if (data.analysis_results && data.analysis_results.length > 0) {
+                        const categories = data.analysis_results.map(r => ({
+                            key_area: r.key_area,
+                            customer_problem: r.customer_problem
+                        }));
+                        document.getElementById('test-classify-json').value = JSON.stringify(categories, null, 2);
+                    }
+                } else {
+                    showToast('Test failed', 'error');
+                }
+            } catch (error) {
+                responseDiv.textContent = `Error: ${error.message}`;
+                showToast('Test failed', 'error');
+            }
+        }
+
+        async function testClassifyReview() {
+            const review = document.getElementById('test-classify-review').value;
+            const existingJson = document.getElementById('test-classify-json').value;
+            const responseDiv = document.getElementById('test-classify-response');
+
+            if (!review) {
+                showToast('Please enter a review to test', 'error');
+                return;
+            }
+
+            responseDiv.style.display = 'block';
+            responseDiv.textContent = 'Testing...';
+
+            try {
+                const payload = { review };
+                if (existingJson) {
+                    payload.existing_json = JSON.parse(existingJson);
+                }
+
+                const response = await fetch(`${API_BASE_URL}/classify-single-review`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(payload)
+                });
+
+                const data = await response.json();
+                responseDiv.textContent = JSON.stringify(data, null, 2);
+
+                if (response.ok) {
+                    showToast('Test successful!', 'success');
+                } else {
+                    showToast('Test failed', 'error');
+                }
+            } catch (error) {
+                responseDiv.textContent = `Error: ${error.message}`;
+                showToast('Test failed', 'error');
+            }
+        }
+
+        function copyAsCode(endpoint) {
+            let code = '';
+
+            switch (endpoint) {
+                case 'analyze-feedback':
+                    const returnRaw = document.getElementById('test-analyze-raw').value;
+                    const source = document.getElementById('test-analyze-source').value;
+                    code = `curl -X POST "${API_BASE_URL}/analyze-feedback" \\
+  -F "file=@customer_feedback.csv" \\
+  -F "return_raw_feedback=${returnRaw}"`;
+                    if (source) code += ` \\
+  -F "source=${source}"`;
+                    break;
+
+                case 'classify-review':
+                    const review = document.getElementById('test-classify-review').value;
+                    const json = document.getElementById('test-classify-json').value;
+                    code = `curl -X POST "${API_BASE_URL}/classify-single-review" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "review": "${review}"${json ? `,
+    "existing_json": ${json}` : ''}
+  }'`;
+                    break;
+            }
+
+            navigator.clipboard.writeText(code).then(() => {
+                showToast('cURL command copied!', 'success');
+            }).catch(() => {
+                showToast('Failed to copy', 'error');
+            });
+        }
+
+        // ==========================
+        // Utility Functions
+        // ==========================
+        
+        function showToast(message, type = 'info') {
+            const toast = document.createElement('div');
+            toast.className = `toast toast-${type}`;
+            
+            const icon = type === 'success' ? '✓' : type === 'error' ? '✕' : 'ℹ';
+            toast.innerHTML = `<span style="font-size: 20px;">${icon}</span> ${message}`;
+            
+            document.body.appendChild(toast);
+            
+            setTimeout(() => {
+                toast.style.opacity = '0';
+                setTimeout(() => toast.remove(), 300);
+            }, 3000);
+        }
+
+        function copyCode(codeId) {
+            const codeElement = document.getElementById(codeId);
+            const text = codeElement.textContent.replace(/\${window\.location\.origin}/g, API_BASE_URL);
+            
+            navigator.clipboard.writeText(text).then(() => {
+                event.target.textContent = 'Copied!';
+                setTimeout(() => {
+                    event.target.textContent = 'Copy';
+                }, 2000);
+            }).catch(() => {
+                showToast('Failed to copy', 'error');
+            });
+        }
+
+        function formatFileSize(bytes) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
+        }
+
+        function setupEventListeners() {
+            // File upload drag and drop
+            const uploadArea = document.querySelector('.file-upload-area');
+            if (uploadArea) {
+                uploadArea.addEventListener('dragover', (e) => {
+                    e.preventDefault();
+                    uploadArea.classList.add('dragging');
+                });
+                
+                uploadArea.addEventListener('dragleave', () => {
+                    uploadArea.classList.remove('dragging');
+                });
+                
+                uploadArea.addEventListener('drop', (e) => {
+                    e.preventDefault();
+                    uploadArea.classList.remove('dragging');
+                    
+                    const files = e.dataTransfer.files;
+                    if (files.length > 0) {
+                        document.getElementById('feedbackFile').files = files;
+                        handleFeedbackFile({ target: { files: files } });
+                    }
+                });
+            }
+
+            // Auto-populate existing categories if analysis data exists
+            document.getElementById('classify-tab').addEventListener('click', () => {
+                if (state.analysisData && state.analysisData.analysis_results) {
+                    const categories = state.analysisData.analysis_results.map(r => ({
+                        key_area: r.key_area,
+                        customer_problem: r.customer_problem
+                    }));
+                    document.getElementById('existingCategories').value = JSON.stringify(categories, null, 2);
+                }
+            });
+        }
+    </script>
+</body>
+</html>
