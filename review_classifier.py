@@ -3082,26 +3082,30 @@ def extract_classification_from_text(text: str, existing_categories: List[Dict[s
             "sentiment_score": -0.1  # Slightly negative default for issues
         }
         
-@app.get("/")
-async def serve_homepage():
-    """Serve the interactive testing webpage"""
+@app.get("/", response_class=HTMLResponse)
+async def serve_webpage():
+    """Serve the AI Assistant Hub webpage"""
     try:
-        # Read the webpage.html file
-        with open("webpage.html", "r", encoding="utf-8") as file:
-            html_content = file.read()
-        return HTMLResponse(content=html_content, status_code=200)
+        with open("webpage.html", "r", encoding="utf-8") as f:
+            html_content = f.read()
+        return HTMLResponse(content=html_content)
     except FileNotFoundError:
-        logger.error("webpage.html file not found")
-        return JSONResponse(
-            content={"error": "Homepage not found. Please ensure webpage.html exists in the application directory."},
+        return HTMLResponse(
+            content="<h1>Error: webpage.html not found</h1><p>Please ensure webpage.html is in the same directory as your app.py file.</p>",
             status_code=404
         )
     except Exception as e:
-        logger.error(f"Error serving homepage: {str(e)}")
-        return JSONResponse(
-            content={"error": "Failed to load homepage"},
+        logging.error(f"Error serving webpage: {e}")
+        return HTMLResponse(
+            content="<h1>Error loading webpage</h1>",
             status_code=500
         )
+
+# Optional: Add a favicon endpoint
+@app.get("/favicon.ico")
+async def favicon():
+    """Return a simple favicon"""
+    return Response(content="", media_type="image/x-icon")
 # Main function for running as standalone server
 if __name__ == "__main__":
     import uvicorn
