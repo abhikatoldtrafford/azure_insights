@@ -2463,7 +2463,7 @@ async def analyze_feedback(
                 analysis_results = await process_csv_data(AZURE_CLIENT, file_text, source)
             else:
                 logger.info(f"[JOB {job_id}] File not detected as CSV, processing as raw text")
-                analysis_results = await analyze_raw_data_chunks(AZURE_CLIENT, file_text)
+                analysis_results = await analyze_raw_data_chunks(AZURE_CLIENT, file_text, source)
         
         # Format the results with the return_raw_feedback parameter
         logger.info(f"[JOB {job_id}] Formatting final analysis results (return_raw_feedback={return_raw_feedback})")
