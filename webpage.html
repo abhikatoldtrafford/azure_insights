@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Customer Feedback Analysis API</title>
+    <title>Feedback AI</title>
     <style>
         * {
             margin: 0;
@@ -726,7 +726,7 @@
         <div class="header-content">
             <div class="logo">
                 <span>📊</span>
-                <span>Customer Feedback Analysis API</span>
+                <span>Feedback AI</span>
             </div>
             <nav class="nav-tabs">
                 <button class="nav-tab active" onclick="switchTab('analyze')">
@@ -755,10 +755,10 @@
                     <div class="file-upload-area" onclick="document.getElementById('feedbackFile').click()">
                         <p style="font-size: 48px; margin-bottom: 8px;">📁</p>
                         <p style="font-weight: 600; font-size: 18px;">Click to upload or drag & drop</p>
-                        <p class="text-small text-muted">Supports CSV and Excel files (.csv, .xlsx, .xls)</p>
+                        <p class="text-small text-muted">Supports CSV, Excel, PDF, TXT and DOCX files</p>
                     </div>
                     <input type="file" id="feedbackFile" style="display: none;" 
-                           accept=".csv,.xlsx,.xls,.xlsm"
+                           accept=".csv,.xlsx,.xls, .xlsm, .txt, .pdf, .docx"
                            onchange="handleFeedbackFile(event)">
                     <div id="fileInfo" style="display: none;"></div>
                 </div>
