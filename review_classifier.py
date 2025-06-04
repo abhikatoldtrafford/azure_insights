@@ -6,7 +6,7 @@ import pandas as pd
 from functools import wraps
 from typing import Dict, List, Any, Optional, Tuple, Union
 from fastapi import FastAPI, APIRouter, UploadFile, File, HTTPException, Form, Request, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 import traceback
 import time
@@ -3081,6 +3081,27 @@ def extract_classification_from_text(text: str, existing_categories: List[Dict[s
             "customer_problem": "Issues related to miscellaneous customer concerns",
             "sentiment_score": -0.1  # Slightly negative default for issues
         }
+        
+@app.get("/")
+async def serve_homepage():
+    """Serve the interactive testing webpage"""
+    try:
+        # Read the webpage.html file
+        with open("webpage.html", "r", encoding="utf-8") as file:
+            html_content = file.read()
+        return HTMLResponse(content=html_content, status_code=200)
+    except FileNotFoundError:
+        logger.error("webpage.html file not found")
+        return JSONResponse(
+            content={"error": "Homepage not found. Please ensure webpage.html exists in the application directory."},
+            status_code=404
+        )
+    except Exception as e:
+        logger.error(f"Error serving homepage: {str(e)}")
+        return JSONResponse(
+            content={"error": "Failed to load homepage"},
+            status_code=500
+        )
 # Main function for running as standalone server
 if __name__ == "__main__":
     import uvicorn
