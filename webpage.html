@@ -748,17 +748,17 @@
         <div id="analyze-tab" class="tab-content active">
             <div class="section">
                 <h2 class="section-title">Analyze Customer Feedback</h2>
-                <p class="text-muted mb-3">Upload your CSV or Excel file containing customer feedback to get AI-powered insights, categorization, and sentiment analysis.</p>
+                <p class="text-muted mb-3">Upload your CSV, Excel, PDF, DOCX or TXT file containing customer feedback to get AI-powered insights, categorization, and sentiment analysis.</p>
 
                 <div class="form-group">
                     <label class="form-label">Upload Feedback File</label>
                     <div class="file-upload-area" onclick="document.getElementById('feedbackFile').click()">
                         <p style="font-size: 48px; margin-bottom: 8px;">📁</p>
                         <p style="font-weight: 600; font-size: 18px;">Click to upload or drag & drop</p>
-                        <p class="text-small text-muted">Supports CSV, Excel, PDF, TXT and DOCX files</p>
+                        <p class="text-small text-muted">Supports CSV, Excel, PDF, DOCX or TXT files</p>
                     </div>
                     <input type="file" id="feedbackFile" style="display: none;" 
-                           accept=".csv,.xlsx,.xls, .xlsm, .txt, .pdf, .docx"
+                           accept=".csv, .xlsx, .xls, .txt, .pdf, .docx"
                            onchange="handleFeedbackFile(event)">
                     <div id="fileInfo" style="display: none;"></div>
                 </div>
@@ -1327,12 +1327,19 @@
                                 </span>
                             </div>
                             <div id="${feedbackId}" class="feedback-samples d-none">
-                                ${area.raw_feedbacks.slice(0, 5).map(feedback => `
-                                    <div class="feedback-item">
-                                        ${feedback['Customer Feedback']}
-                                        ${getSentimentBadge(feedback.sentiment_score)}
-                                    </div>
-                                `).join('')}
+                                ${area.raw_feedbacks.slice(0, 5).map(feedback => {
+                                    // Try multiple possible keys for the feedback text
+                                    const feedbackText = feedback['Customer Feedback'] || 
+                                                       feedback['text'] || 
+                                                       feedback['feedback'] || 
+                                                       'No feedback text available';
+                                    return `
+                                        <div class="feedback-item">
+                                            ${feedbackText}
+                                            ${getSentimentBadge(feedback.sentiment_score || 0)}
+                                        </div>
+                                    `;
+                                }).join('')}
                                 ${area.raw_feedbacks.length > 5 ? `
                                     <div class="text-small text-muted mt-2">
                                         ... and ${area.raw_feedbacks.length - 5} more
