@@ -15,6 +15,16 @@ from io import StringIO
 import tempfile
 from openai import AzureOpenAI
 from fuzzywuzzy import process
+import aiohttp
+import tempfile
+from typing import Optional, Dict, Any, Union
+import mimetypes
+from io import BytesIO
+
+# Add these constants at the top of your file
+EXTRACT_REVIEWS_API_URL = "https://copilotv2.azurewebsites.net/extract-reviews"
+SUPPORTED_DIRECT_FORMATS = {'.csv', '.xlsx', '.xls', '.xlsm'}  # Formats we handle directly
+API_TIMEOUT = 60  # Timeout for the extract-reviews API call
 _positive_anchor_embedding = None
 _negative_anchor_embedding = None
 def async_timeout(seconds):
@@ -80,8 +90,7 @@ async def timeout_middleware(request: Request, call_next):
             status_code=504,
             content={"detail": "Request timed out after 120 seconds"}
         )
-# Router is kept for optional integration scenarios
-router = APIRouter()
+
 
 # Common key areas from screenshot and expanded options
 # Change from dictionary format to simple list of areas
@@ -127,6 +136,134 @@ COMMON_KEY_AREAS = [
     "Wishlist & Favorites",
     "App Filters & Sorting"
 ]
+class FileConversionError(Exception):
+    """Custom exception for file conversion errors"""
+    pass
+
+async def convert_file_to_csv(
+    file_content: bytes,
+    filename: str,
+    prompt: Optional[str] = None,
+    mode: str = "extract"
+) -> str:
+    """
+    Convert any file to CSV using the extract-reviews API.
+    
+    Args:
+        file_content: Raw file content
+        filename: Original filename
+        prompt: Optional prompt for extraction
+        mode: Mode for extraction (extract/generate/auto)
+        
+    Returns:
+        CSV content as string
+        
+    Raises:
+        FileConversionError: If conversion fails
+    """
+    try:
+        # Create form data
+        form_data = aiohttp.FormData()
+        
+        # Add file with proper content type
+        content_type = mimetypes.guess_type(filename)[0] or 'application/octet-stream'
+        form_data.add_field(
+            'file',
+            file_content,
+            filename=filename,
+            content_type=content_type
+        )
+        
+        # Add other parameters
+        form_data.add_field('mode', mode)
+        form_data.add_field('output_format', 'csv')  # Always request CSV format
+        
+        # Add prompt if provided
+        if prompt:
+            form_data.add_field('prompt', prompt)
+        else:
+            # Default prompt with specific column names as requested
+            default_prompt = """
+            Extract customer feedback/reviews from this document.
+            Structure the data with these specific columns:
+            - user: Customer name or reviewer identifier
+            - review_text: The actual feedback or review content
+            - date: When the review was submitted
+            - source: Where the review came from (platform, channel, etc.)
+            - star_rating: Numerical rating (1-5 stars) or sentiment score
+            
+            Focus on extracting all customer opinions, comments, and feedback.
+            If certain fields are not available, use 'N/A' as the value.
+            """
+            form_data.add_field('prompt', default_prompt.strip())
+        
+        # Request specific columns
+        form_data.add_field('columns', 'user,review_text,date,source,star_rating')
+        
+        # Make the API call with timeout and retries
+        timeout = aiohttp.ClientTimeout(total=API_TIMEOUT)
+        
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            for attempt in range(3):  # Retry up to 3 times
+                try:
+                    logger.info(f"Calling extract-reviews API (attempt {attempt + 1}/3) for file: {filename}")
+                    
+                    async with session.post(
+                        EXTRACT_REVIEWS_API_URL,
+                        data=form_data
+                    ) as response:
+                        if response.status == 200:
+                            # Check content type of response
+                            content_type = response.headers.get('Content-Type', '')
+                            
+                            # The API returns CSV as text
+                            if 'text/csv' in content_type or 'text/plain' in content_type:
+                                csv_content = await response.text()
+                            else:
+                                # If binary response (shouldn't happen for CSV), decode it
+                                content_bytes = await response.read()
+                                csv_content = content_bytes.decode('utf-8')
+                            
+                            # Validate we got actual CSV content
+                            if not csv_content or not csv_content.strip():
+                                raise FileConversionError("API returned empty CSV content")
+                            
+                            # Quick validation - check if it looks like CSV
+                            lines = csv_content.strip().split('\n')
+                            if len(lines) < 2:  # At least header + 1 row
+                                raise FileConversionError("CSV content appears to be invalid (too few lines)")
+                            
+                            logger.info(f"Successfully converted {filename} to CSV ({len(csv_content)} characters, {len(lines)} lines)")
+                            return csv_content
+                            
+                        else:
+                            error_text = await response.text()
+                            logger.error(f"API error (status {response.status}): {error_text}")
+                            
+                            if attempt == 2:  # Last attempt
+                                raise FileConversionError(
+                                    f"Failed to convert file after 3 attempts. Status: {response.status}, Error: {error_text}"
+                                )
+                            
+                            # Wait before retry
+                            await asyncio.sleep(2 ** attempt)  # Exponential backoff
+                            
+                except asyncio.TimeoutError:
+                    logger.error(f"Timeout on attempt {attempt + 1}")
+                    if attempt == 2:
+                        raise FileConversionError(f"API timeout after {API_TIMEOUT} seconds")
+                    await asyncio.sleep(2 ** attempt)
+                    
+                except aiohttp.ClientError as e:
+                    logger.error(f"Client error on attempt {attempt + 1}: {str(e)}")
+                    if attempt == 2:
+                        raise FileConversionError(f"Network error: {str(e)}")
+                    await asyncio.sleep(2 ** attempt)
+                    
+    except Exception as e:
+        logger.error(f"Error converting file {filename}: {str(e)}")
+        raise FileConversionError(f"Failed to convert file: {str(e)}")
+
 async def generate_summary(
     client: AzureOpenAI,
     review_embeddings: List[List[float]],
@@ -1341,6 +1478,7 @@ async def cosine_similarity(vec1: List[float], vec2: List[float]) -> float:
 async def identify_relevant_columns(client: AzureOpenAI, df: pd.DataFrame) -> Dict[str, str]:
     """
     Uses OpenAI to identify which columns contain ratings, feedback text, received date, name, and source.
+    Now also recognizes column names from the extract-reviews API.
     
     Args:
         client: Azure OpenAI client
@@ -1377,33 +1515,34 @@ async def identify_relevant_columns(client: AzureOpenAI, df: pd.DataFrame) -> Di
 
         1. CUSTOMER FEEDBACK COLUMN:
            - Contains textual customer opinions, comments, reviews, or feedback
+           - Common names: "review_text", "Customer Feedback", "feedback", "comment", "review", "text", "description", "comments"
            - Usually includes sentences, paragraphs, or detailed comments
            - May contain terms like "liked", "disliked", "issue with", "problem", etc.
            - Look for the column with the most detailed textual content
         
         2. RATING COLUMN:
            - Contains numerical scores (1-5, 1-10) or textual ratings ("Excellent", "Poor")
-           - Often named "rating", "score", "stars", "satisfaction", etc.
+           - Common names: "star_rating", "rating", "score", "stars", "satisfaction", "Rating"
            - May be presented as numbers or categorical values
 
         3. RECEIVED COLUMN:
            - Contains date or timestamp information when the feedback was received
-           - Often named "date", "received", "submitted", "timestamp", etc.
+           - Common names: "date", "received", "submitted", "timestamp", "Received", "created_at"
            - May be formatted as date, datetime, or timestamp
 
         4. NAME COLUMN:
            - Contains the name of the reviewer or customer
-           - Often named "name", "customer", "reviewer", "user", etc.
+           - Common names: "user", "Name", "customer", "reviewer", "username", "customer_name"
            - Usually contains full names, first names, or usernames
 
         5. SOURCE COLUMN:
            - Contains information about where the feedback came from
-           - Often named "source", "platform", "channel", "website", etc.
+           - Common names: "source", "platform", "channel", "website", "Source", "origin"
            - May contain values like "Google", "Amazon", "Website", "App", etc.
 
         For each column you identify, consider:
         - Column content and data type
-        - Column name relevance
+        - Column name relevance (including API column names like "user", "review_text", "star_rating")
         - Amount of information in the column
         - Uniqueness of values
 
@@ -1411,6 +1550,7 @@ async def identify_relevant_columns(client: AzureOpenAI, df: pd.DataFrame) -> Di
         - You MUST select from the provided column indices (0 to {len(columns_list)-1})
         - You must specify both the index and exact column name
         - If a certain type of column doesn't exist, set the value to null
+        - Be aware of both traditional column names AND API column names (user, review_text, date, source, star_rating)
 
         RESPONSE FORMAT:
         You must respond with column indices and names in this exact JSON format:
@@ -1426,7 +1566,7 @@ async def identify_relevant_columns(client: AzureOpenAI, df: pd.DataFrame) -> Di
         response = client.chat.completions.create(
             model="gpt-4.1-mini",
             messages=[
-                {"role": "system", "content": "You are a data analysis assistant that identifies column types in customer feedback datasets."},
+                {"role": "system", "content": "You are a data analysis assistant that identifies column types in customer feedback datasets. You recognize both traditional column names and API-generated column names."},
                 {"role": "user", "content": prompt}
             ],
             temperature=0.1,
@@ -1468,13 +1608,13 @@ async def identify_relevant_columns(client: AzureOpenAI, df: pd.DataFrame) -> Di
                     logging.warning(f"Error parsing column specification '{result[col_type]}': {e}")
         
         # Apply fallback strategies for each column type
-        # Feedback column fallback
+        # Feedback column fallback - now includes API column names
         if not columns["feedback_col"]:
-            # Try to find a text column with keywords
-            keywords = ["comment", "feedback", "review", "text", "description", "comments"]
+            # Try to find a text column with keywords (including API names)
+            keywords = ["review_text", "comment", "feedback", "review", "text", "description", "comments", "Customer Feedback"]
             for col in df.columns:
                 col_lower = col.lower()
-                if any(keyword in col_lower for keyword in keywords):
+                if any(keyword.lower() in col_lower for keyword in keywords):
                     columns["feedback_col"] = col
                     break
             
@@ -1490,13 +1630,13 @@ async def identify_relevant_columns(client: AzureOpenAI, df: pd.DataFrame) -> Di
                         logger.info(f"Sample feedback values: {sample_values}")
                         break
         
-        # Rating column fallback
+        # Rating column fallback - now includes API column names
         if not columns["rating_col"]:
-            # Try to find a numeric column with keywords
-            keywords = ["rating", "score", "stars", "grade", "rank"]
+            # Try to find a numeric column with keywords (including API names)
+            keywords = ["star_rating", "rating", "score", "stars", "grade", "rank", "Rating"]
             for col in df.columns:
                 col_lower = col.lower()
-                if any(keyword in col_lower for keyword in keywords):
+                if any(keyword.lower() in col_lower for keyword in keywords):
                     logger.info(f"Selected '{col}' as rating column based on keyword match")
                     columns["rating_col"] = col
                     break
@@ -1513,10 +1653,10 @@ async def identify_relevant_columns(client: AzureOpenAI, df: pd.DataFrame) -> Di
                             columns["rating_col"] = col
                             break
                             
-        # Received column fallback
+        # Received column fallback - now includes API column names
         if not columns["received_col"]:
-            # Try to find date/time columns
-            keywords = ["date", "time", "received", "created", "timestamp", "submitted"]
+            # Try to find date/time columns (including API names)
+            keywords = ["date", "time", "received", "created", "timestamp", "submitted", "Received"]
             
             # First check column names
             for col in df.columns:
@@ -1547,9 +1687,9 @@ async def identify_relevant_columns(client: AzureOpenAI, df: pd.DataFrame) -> Di
                             columns["received_col"] = col
                             break
                             
-        # Name column fallback
+        # Name column fallback - now includes API column names
         if not columns["name_col"]:
-            keywords = ["name", "customer", "reviewer", "user", "client", "person"]
+            keywords = ["user", "name", "customer", "reviewer", "username", "client", "person", "Name"]
             for col in df.columns:
                 col_lower = col.lower()
                 if any(keyword in col_lower for keyword in keywords):
@@ -1559,7 +1699,7 @@ async def identify_relevant_columns(client: AzureOpenAI, df: pd.DataFrame) -> Di
                     
         # Source column fallback
         if not columns["source_col"]:
-            keywords = ["source", "platform", "channel", "origin", "website", "site"]
+            keywords = ["source", "platform", "channel", "origin", "website", "site", "Source"]
             for col in df.columns:
                 col_lower = col.lower()
                 if any(keyword in col_lower for keyword in keywords):
@@ -1581,7 +1721,6 @@ async def identify_relevant_columns(client: AzureOpenAI, df: pd.DataFrame) -> Di
             "name_col": None,
             "source_col": None
         }
-
 async def analyze_raw_data_chunks(
     client: AzureOpenAI, 
     raw_data: str,
@@ -2379,120 +2518,7 @@ async def format_analysis_results(analysis_results: Dict[str, Any], return_raw_f
         },
         "insight_summary": insight_summary  # Add the insight summary to the return value
     }
-@router.post("/analyze-feedback")
-@async_timeout(120) 
-async def analyze_feedback(
-    file: UploadFile = File(...),
-    return_raw_feedback: bool = Form(True),
-    source: str = Form(None)  # Add optional source parameter
-) -> JSONResponse:
-    """
-    Analyzes customer feedback from an uploaded CSV or Excel file.
-    
-    Args:
-        file: Uploaded file (CSV or Excel)
-        return_raw_feedback: Whether to include raw feedback text in the response
-        source: Optional source value to override the Source column
-        
-    Returns:
-        JSONResponse with analysis results
-    """
-    job_id = f"feedback_analysis_{int(time.time())}"
-    
-    try:
-        start_time = time.time()
-        logger.info(f"[JOB {job_id}] Starting analysis of file: {file.filename}")
-        logger.info(f"[JOB {job_id}] Return raw feedback: {return_raw_feedback}")
-        logger.info(f"[JOB {job_id}] Source override: {source if source else 'None'}")
-        
-        # Read the uploaded file
-        logger.info(f"[JOB {job_id}] Reading file content")
-        file_content = await file.read()
-        file_size = len(file_content)
-        logger.info(f"[JOB {job_id}] File size: {file_size/1024:.1f} KB")
-        
-        # Determine file type based on extension
-        file_ext = os.path.splitext(file.filename)[1].lower()
-        
-        # Process Excel files
-        if file_ext in ['.xlsx', '.xls', '.xlsm']:
-            logger.info(f"[JOB {job_id}] Detected Excel file, processing with Excel-specific workflow")
-            analysis_results = await process_excel_data(AZURE_CLIENT, file_content, file.filename, source)
-        else:
-            # Handle CSV and other file types with existing logic
-            try:
-                logger.info(f"[JOB {job_id}] Attempting UTF-8 decoding")
-                file_text = file_content.decode("utf-8")
-                logger.info(f"[JOB {job_id}] Successfully decoded with UTF-8")
-            except UnicodeDecodeError:
-                # Try different encoding if UTF-8 fails
-                try:
-                    logger.info(f"[JOB {job_id}] UTF-8 failed, attempting Latin-1 decoding")
-                    file_text = file_content.decode("latin-1")
-                    logger.info(f"[JOB {job_id}] Successfully decoded with Latin-1")
-                except Exception:
-                    # If all fails, save to temp file and use pandas to read
-                    logger.info(f"[JOB {job_id}] Text decoding failed, using pandas for parsing")
-                    with tempfile.NamedTemporaryFile(delete=False, suffix='.csv') as temp:
-                        temp.write(file_content)
-                        temp_path = temp.name
-                        logger.info(f"[JOB {job_id}] Saved to temporary file: {temp_path}")
-                    
-                    try:
-                        logger.info(f"[JOB {job_id}] Attempting to read with pandas")
-                        df = pd.read_csv(temp_path)
-                        file_text = df.to_csv(index=False)
-                        logger.info(f"[JOB {job_id}] Successfully parsed with pandas: {df.shape[0]} rows, {df.shape[1]} columns")
-                    except Exception as read_error:
-                        logger.error(f"[JOB {job_id}] Pandas parsing failed: {str(read_error)}")
-                        os.unlink(temp_path)
-                        raise HTTPException(
-                            status_code=400, 
-                            detail=f"Could not parse file: {str(read_error)}"
-                        )
-                    finally:
-                        logger.info(f"[JOB {job_id}] Cleaning up temporary file")
-                        os.unlink(temp_path)
-            
-            # Check if it looks like CSV
-            is_csv = ',' in file_text and '\n' in file_text
-            
-            # Process the data
-            if is_csv:
-                logger.info(f"[JOB {job_id}] File detected as CSV, processing with structured data workflow")
-                analysis_results = await process_csv_data(AZURE_CLIENT, file_text, source)
-            else:
-                logger.info(f"[JOB {job_id}] File not detected as CSV, processing as raw text")
-                analysis_results = await analyze_raw_data_chunks(AZURE_CLIENT, file_text, source)
-        
-        # Format the results with the return_raw_feedback parameter
-        logger.info(f"[JOB {job_id}] Formatting final analysis results (return_raw_feedback={return_raw_feedback})")
-        formatted_results = await format_analysis_results(analysis_results, return_raw_feedback)
-        
-        
-        # Log summary statistics
-        areas_count = len(formatted_results.get("analysis_results", []))
-        total_items = formatted_results.get("summary", {}).get("total_feedback_items", 0)
-        
-        # Log the detected key areas and their counts
-        logger.info(f"[JOB {job_id}] ANALYSIS SUMMARY: {areas_count} key areas, {total_items} total feedback items")
-        for area in formatted_results.get("analysis_results", []):
-            logger.info(f"[JOB {job_id}] - {area['key_area']}: {area['number_of_users']} feedback items")
-        
-        elapsed_time = time.time() - start_time
-        logger.info(f"[JOB {job_id}] Analysis completed in {elapsed_time:.2f} seconds")
-        
-        return JSONResponse(
-            content=formatted_results,
-            status_code=200
-        )
-        
-    except Exception as e:
-        logging.error(f"Error analyzing feedback: {str(e)}\n{traceback.format_exc()}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error analyzing feedback: {str(e)}"
-        )
+
 def integrate_with_main_app(app):
     """
     Integrates the customer feedback analysis router with a FastAPI app.
@@ -2505,24 +2531,269 @@ def integrate_with_main_app(app):
 
 # Standalone app routes
 @app.post("/analyze-feedback")
-@async_timeout(120)
-async def standalone_analyze_feedback(
+@async_timeout(180)  # Increased timeout for file conversion + analysis
+async def analyze_feedback(
     file: UploadFile = File(...),
     return_raw_feedback: bool = Form(False),
-    source: str = Form(None)  # Add optional source parameter
+    source: str = Form(None),
+    extraction_prompt: str = Form(None)  # Optional custom extraction prompt
 ) -> JSONResponse:
     """
-    Standalone version of the analyze_feedback endpoint.
+    Analyzes customer feedback from any uploaded file type.
+    Supports CSV, Excel natively, and all other formats through automatic conversion.
     
     Args:
-        file: Uploaded file (expected to be CSV or Excel)
+        file: Uploaded file (any format)
         return_raw_feedback: Whether to include raw feedback text in the response
         source: Optional source value to override the Source column
+        extraction_prompt: Optional custom prompt for file extraction
         
     Returns:
         JSONResponse with analysis results
     """
-    return await analyze_feedback(file, return_raw_feedback, source)
+    job_id = f"feedback_analysis_{int(time.time())}"
+    
+    try:
+        start_time = time.time()
+        logger.info(f"[JOB {job_id}] Starting analysis of file: {file.filename}")
+        logger.info(f"[JOB {job_id}] File content type: {file.content_type}")
+        logger.info(f"[JOB {job_id}] Return raw feedback: {return_raw_feedback}")
+        logger.info(f"[JOB {job_id}] Source override: {source if source else 'None'}")
+        
+        # Read the uploaded file
+        logger.info(f"[JOB {job_id}] Reading file content")
+        file_content = await file.read()
+        file_size = len(file_content)
+        logger.info(f"[JOB {job_id}] File size: {file_size/1024:.1f} KB")
+        
+        # Validate file size (set reasonable limits)
+        MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
+        if file_size > MAX_FILE_SIZE:
+            raise HTTPException(
+                status_code=413,
+                detail=f"File too large. Maximum size is {MAX_FILE_SIZE/1024/1024:.0f}MB"
+            )
+        
+        # Determine file type based on extension
+        file_ext = os.path.splitext(file.filename)[1].lower()
+        
+        # MAINTAIN EXISTING LOGIC FOR CSV AND EXCEL FILES
+        if file_ext in SUPPORTED_DIRECT_FORMATS:
+            logger.info(f"[JOB {job_id}] File type {file_ext} is directly supported - using existing logic")
+            
+            # Process Excel files with existing logic
+            if file_ext in ['.xlsx', '.xls', '.xlsm']:
+                logger.info(f"[JOB {job_id}] Detected Excel file, processing with Excel-specific workflow")
+                analysis_results = await process_excel_data(AZURE_CLIENT, file_content, file.filename, source)
+            
+            # Process CSV files with existing logic
+            else:  # .csv
+                # Handle CSV and other file types with existing logic
+                try:
+                    logger.info(f"[JOB {job_id}] Attempting UTF-8 decoding")
+                    file_text = file_content.decode("utf-8")
+                    logger.info(f"[JOB {job_id}] Successfully decoded with UTF-8")
+                except UnicodeDecodeError:
+                    # Try different encoding if UTF-8 fails
+                    try:
+                        logger.info(f"[JOB {job_id}] UTF-8 failed, attempting Latin-1 decoding")
+                        file_text = file_content.decode("latin-1")
+                        logger.info(f"[JOB {job_id}] Successfully decoded with Latin-1")
+                    except Exception:
+                        # If all fails, save to temp file and use pandas to read
+                        logger.info(f"[JOB {job_id}] Text decoding failed, using pandas for parsing")
+                        with tempfile.NamedTemporaryFile(delete=False, suffix='.csv') as temp:
+                            temp.write(file_content)
+                            temp_path = temp.name
+                            logger.info(f"[JOB {job_id}] Saved to temporary file: {temp_path}")
+                        
+                        try:
+                            logger.info(f"[JOB {job_id}] Attempting to read with pandas")
+                            df = pd.read_csv(temp_path)
+                            file_text = df.to_csv(index=False)
+                            logger.info(f"[JOB {job_id}] Successfully parsed with pandas: {df.shape[0]} rows, {df.shape[1]} columns")
+                        except Exception as read_error:
+                            logger.error(f"[JOB {job_id}] Pandas parsing failed: {str(read_error)}")
+                            os.unlink(temp_path)
+                            raise HTTPException(
+                                status_code=400, 
+                                detail=f"Could not parse file: {str(read_error)}"
+                            )
+                        finally:
+                            logger.info(f"[JOB {job_id}] Cleaning up temporary file")
+                            if os.path.exists(temp_path):
+                                os.unlink(temp_path)
+                
+                # Check if it looks like CSV
+                is_csv = ',' in file_text and '\n' in file_text
+                
+                # Process the data
+                if is_csv:
+                    logger.info(f"[JOB {job_id}] File detected as CSV, processing with structured data workflow")
+                    analysis_results = await process_csv_data(AZURE_CLIENT, file_text, source)
+                else:
+                    logger.info(f"[JOB {job_id}] File not detected as CSV, processing as raw text")
+                    analysis_results = await analyze_raw_data_chunks(AZURE_CLIENT, file_text)
+        
+        else:
+            # NEW PATH: File needs conversion through extract-reviews API
+            logger.info(f"[JOB {job_id}] File type {file_ext} requires conversion via extract-reviews API")
+            
+            try:
+                # Build custom prompt if not provided
+                if not extraction_prompt:
+                    extraction_prompt = f"""
+                    Extract customer feedback/reviews from this {file_ext} file.
+                    Structure the data with these specific columns:
+                    - user: Customer name or reviewer identifier
+                    - review_text: The actual feedback or review content
+                    - date: When the review was submitted
+                    - source: Where the review came from (platform, channel, etc.)
+                    - star_rating: Numerical rating (1-5 stars) or sentiment score
+                    
+                    Focus on extracting all customer opinions, comments, and feedback.
+                    Maintain the context and meaning of each review.
+                    If certain fields are not available, use 'N/A' as the value.
+                    """
+                
+                # Convert file to CSV using the extract-reviews API
+                csv_content = await convert_file_to_csv(
+                    file_content=file_content,
+                    filename=file.filename,
+                    prompt=extraction_prompt,
+                    mode="extract"
+                )
+                
+                logger.info(f"[JOB {job_id}] File converted successfully to CSV")
+                
+                # Validate CSV content
+                if not csv_content or csv_content.strip() == "":
+                    raise ValueError("Conversion resulted in empty CSV content")
+                
+                # Map API column names to standard system column names
+                try:
+                    # Parse the CSV to check and map columns
+                    df = pd.read_csv(StringIO(csv_content))
+                    
+                    # Define the column mapping from API to system
+                    column_mapping = {
+                        'user': 'Name',
+                        'review_text': 'Customer Feedback',
+                        'date': 'Received',
+                        'source': 'Source',
+                        'star_rating': 'Rating'
+                    }
+                    
+                    # Check if we have API column names and map them
+                    columns_mapped = False
+                    for api_col, system_col in column_mapping.items():
+                        if api_col in df.columns:
+                            columns_mapped = True
+                            break
+                    
+                    if columns_mapped:
+                        # Apply the mapping
+                        df = df.rename(columns=column_mapping)
+                        logger.info(f"[JOB {job_id}] Mapped API columns to system columns")
+                        
+                        # Ensure all expected columns exist
+                        expected_columns = ['Name', 'Customer Feedback', 'Received', 'Source']
+                        for col in expected_columns:
+                            if col not in df.columns:
+                                df[col] = 'N/A'
+                        
+                        # Convert back to CSV
+                        csv_content = df.to_csv(index=False)
+                    
+                except Exception as e:
+                    logger.warning(f"[JOB {job_id}] Could not map columns, using original: {str(e)}")
+                
+                # Add source information if not provided
+                if not source:
+                    # Use file type as source hint
+                    source = f"Imported from {file_ext.upper()} file"
+                
+                # Process the converted CSV with existing CSV processing logic
+                logger.info(f"[JOB {job_id}] Processing converted CSV data")
+                analysis_results = await process_csv_data(AZURE_CLIENT, csv_content, source)
+                    
+            except FileConversionError as e:
+                logger.error(f"[JOB {job_id}] File conversion failed: {str(e)}")
+                
+                # Fallback: Try to process as raw text if possible
+                logger.info(f"[JOB {job_id}] Attempting fallback to raw text processing")
+                
+                try:
+                    # Try different decodings
+                    text_content = None
+                    for encoding in ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1']:
+                        try:
+                            text_content = file_content.decode(encoding)
+                            logger.info(f"[JOB {job_id}] Successfully decoded with {encoding}")
+                            break
+                        except UnicodeDecodeError:
+                            continue
+                    
+                    if text_content:
+                        # Process as raw unstructured text
+                        logger.info(f"[JOB {job_id}] Processing as unstructured text")
+                        analysis_results = await analyze_raw_data_chunks(AZURE_CLIENT, text_content)
+                    else:
+                        # Binary file that couldn't be converted or decoded
+                        raise HTTPException(
+                            status_code=422,
+                            detail=f"Unable to process {file_ext} file. The file could not be converted to a readable format. Please try converting to CSV or Excel format first."
+                        )
+                        
+                except Exception as fallback_error:
+                    logger.error(f"[JOB {job_id}] Fallback processing failed: {str(fallback_error)}")
+                    raise HTTPException(
+                        status_code=422,
+                        detail=f"Unable to process file. Error: {str(fallback_error)}"
+                    )
+        
+        # Format the results with existing logic
+        logger.info(f"[JOB {job_id}] Formatting final analysis results (return_raw_feedback={return_raw_feedback})")
+        formatted_results = await format_analysis_results(analysis_results, return_raw_feedback)
+        
+        # Add processing metadata
+        formatted_results["metadata"] = {
+            "job_id": job_id,
+            "original_filename": file.filename,
+            "file_size_kb": round(file_size / 1024, 2),
+            "processing_time_seconds": round(time.time() - start_time, 2),
+            "file_type": file_ext,
+            "source": source,
+            "converted_via_api": file_ext not in SUPPORTED_DIRECT_FORMATS
+        }
+        
+        # Log summary statistics
+        areas_count = len(formatted_results.get("analysis_results", []))
+        total_items = formatted_results.get("summary", {}).get("total_feedback_items", 0)
+        
+        # Log the detected key areas and their counts
+        logger.info(f"[JOB {job_id}] ANALYSIS SUMMARY: {areas_count} key areas, {total_items} total feedback items")
+        for area in formatted_results.get("analysis_results", [])[:5]:  # Log top 5
+            logger.info(f"[JOB {job_id}] - {area['key_area']}: {area['number_of_users']} feedback items")
+        
+        elapsed_time = time.time() - start_time
+        logger.info(f"[JOB {job_id}] Analysis completed in {elapsed_time:.2f} seconds")
+        
+        return JSONResponse(
+            content=formatted_results,
+            status_code=200
+        )
+        
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is
+        raise
+        
+    except Exception as e:
+        logger.error(f"[JOB {job_id}] Unexpected error: {str(e)}\n{traceback.format_exc()}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error analyzing feedback: {str(e)}"
+        )
 @app.post("/classify-single-review")
 async def standalone_classify_single_review(
     request: Request = None,
@@ -2549,336 +2820,6 @@ async def standalone_classify_single_review(
         # Process as JSON body
         return await classify_single_review(request=request)
         
-@router.post("/classify-single-review")
-async def classify_single_review(
-    request: Request = None,
-    review: str = None,
-    existing_json: str = None
-) -> JSONResponse:
-    """
-    Classifies a single review against existing categories using GPT-4.1.
-    Accepts input either as a JSON request body or as form parameters.
-    
-    Args:
-        request: FastAPI request object containing JSON with 'review' and 'existing_json'
-        review: Direct string input for review (alternative to request)
-        existing_json: Direct string/JSON input for categories (alternative to request)
-        
-    Returns:
-        JSONResponse with classification result containing key_area, customer_problem, and sentiment_score
-    """
-    try:
-        # Parse input from either request body or direct parameters
-        review_text = ""
-        existing_categories_raw = []
-        
-        # Get data from request body if provided and other params are None
-        if request is not None and review is None:
-            try:
-                data = await request.json()
-                review_text = data.get("review", "")
-                existing_categories_raw = data.get("existing_json", [])
-            except Exception as e:
-                logger.warning(f"Error parsing request JSON: {str(e)}")
-                # Try to get data from form if JSON parsing failed
-                form = await request.form()
-                review_text = form.get("review", "")
-                existing_json_str = form.get("existing_json", "")
-                if existing_json_str:
-                    try:
-                        existing_categories_raw = json.loads(existing_json_str)
-                    except:
-                        logger.warning("Could not parse existing_json as JSON")
-                        existing_categories_raw = []
-        else:
-            # Get data from direct parameters
-            review_text = review or ""
-            if existing_json:
-                try:
-                    # Try to parse as JSON if it's a string
-                    if isinstance(existing_json, str):
-                        try:
-                            existing_categories_raw = json.loads(existing_json)
-                        except:
-                            logger.warning("Could not parse existing_json string as JSON")
-                            existing_categories_raw = []
-                    else:
-                        existing_categories_raw = existing_json
-                except:
-                    logger.warning("Error processing existing_json parameter")
-                    existing_categories_raw = []
-        
-        # Store original raw request for potential fallback
-        original_json_data = existing_json if isinstance(existing_json, str) else json.dumps(existing_categories_raw) if existing_categories_raw else "[]"
-        
-        # Validate review input - if empty, use a generic placeholder
-        if not review_text or review_text.strip() == "":
-            review_text = "This is a general feedback that needs classification."
-            logger.warning("Empty review text provided, using generic placeholder")
-        else:
-            logger.info(f"Processing review: {review_text[:100]}...")
-        
-        # Process existing categories - handle empty input gracefully
-        existing_categories = []
-        
-        # Handle different possible JSON formats
-        if isinstance(existing_categories_raw, list):
-            existing_categories = existing_categories_raw
-        elif isinstance(existing_categories_raw, dict) and "analysis_results" in existing_categories_raw:
-            existing_categories = existing_categories_raw.get("analysis_results", [])
-        elif isinstance(existing_categories_raw, str) and existing_categories_raw.strip():
-            try:
-                json_data = json.loads(existing_categories_raw)
-                if isinstance(json_data, list):
-                    existing_categories = json_data
-                elif isinstance(json_data, dict) and "analysis_results" in json_data:
-                    existing_categories = json_data.get("analysis_results", [])
-            except:
-                logger.warning("Could not parse existing_json as JSON string")
-        
-        # If no categories provided or parsing failed, create a default category
-        if not existing_categories:
-            logger.warning("No valid categories found, using default categories")
-        logger.info(f"Processing with {len(existing_categories)} categories")
-        
-        # Extract just key_area and customer_problem from existing categories
-        simplified_categories = []
-        for category in existing_categories:
-            if isinstance(category, dict) and "key_area" in category and "customer_problem" in category:
-                simplified_categories.append({
-                    "key_area": category["key_area"],
-                    "customer_problem": category["customer_problem"]
-                })
-        
-        # If no valid categories found, create a default one
-        if not simplified_categories:
-            simplified_categories = {}        
-        # Prepare list of existing categories for the prompt
-        categories_list = "\n".join([
-            f"{i+1}. Key Area: '{cat['key_area']}', Customer Problem: '{cat['customer_problem']}'"
-            for i, cat in enumerate(simplified_categories)
-        ])
-        prompt = f"""
-        # Customer Review Classification and Sentiment Analysis Task
-
-        ## Your Objective
-        1. Analyze the provided customer review and either:
-            - Match it to an existing category if there's a good thematic fit (80%+ similarity)
-            - Create a new category if the review doesn't clearly match any existing category
-        2. Determine the sentiment score of the review on a scale from -1.0 (extremely negative) to 1.0 (extremely positive)
-
-        For classification, provide:
-            - `key_area`: A short (2-4 word) label identifying the general functional area
-            - `customer_problem`: Concise summary of the specific issue (5-8 words)
-            
-        For sentiment, provide:
-            - `sentiment_score`: A float value between -1.0 and 1.0 where:
-                * -1.0 to -0.6: Extremely negative (angry, frustrated)
-                * -0.6 to -0.2: Moderately negative (disappointed, dissatisfied)
-                * -0.2 to 0.2: Neutral (factual, balanced)
-                * 0.2 to 0.6: Moderately positive (pleased, satisfied)
-                * 0.6 to 1.0: Extremely positive (delighted, enthusiastic)
-            
-        ## Classification Instructions
-        CAREFULLY CONSIDER:
-            1. ONLY match to an existing category when there's a CLEAR thematic match (the review discusses the same type of issue)
-            2. CREATE A NEW CATEGORY when:
-                - The review addresses a different functional area than existing categories
-                - The review describes a different type of problem within a similar area
-                - The review contains a substantially different complaint or suggestion
-
-        ## Understanding the Database Structure
-        The feedback database has these key fields in each row:
-        - `key_area`: A short (2-4 word) label identifying the general topic area
-        - `customer_problem`: Summary of the issue based on the EXACT REVIEW TEXT (upto 5-8 words)
-        
-        These two fields MUST ALWAYS BE PAIRED TOGETHER exactly as they appear in the existing categories.
-
-        ## Existing Categories
-        These are the EXACT `key_area` and `customer_problem` pairs currently in our database:
-        {categories_list}
-
-        ## Customer Review to Classify
-        "{review_text}"
-
-        ## Classification Instructions
-        1. PRIORITIZE matching to an EXISTING category - this is CRITICAL for database consistency
-        2. Look for thematic matches between the review content and the existing categories
-        3. When you find a match, you MUST use BOTH the exact `key_area` AND `customer_problem` from that category (copy-paste exactly)
-        4. Only create a new category if the review is unrelated to ALL existing categories
-
-        ## Sentiment Analysis Instructions
-        1. Analyze the emotional tone, language, and context of the review
-        2. Consider both explicit sentiment words and implicit meaning
-        3. Pay attention to intensity modifiers (very, extremely, somewhat)
-        4. Account for mixed sentiments by determining the dominant tone
-        5. Assign a precise score between -1.0 and 1.0, not just the range boundaries
-
-        ## IMPORTANT REQUIREMENTS
-        1. Your response MUST be a valid JSON object with EXACTLY these three fields:
-           - key_area: The category name (preferably from existing categories)
-           - customer_problem: The problem description (preferably from existing categories)
-           - sentiment_score: A float value between -1.0 and 1.0
-        2. DO NOT include any explanation, notes, or additional text
-        3. DO NOT add any extra fields to the JSON
-        4. COPY EXACT category names and descriptions when using existing categories
-
-        ## EXAMPLES of Classification and Sentiment Scoring
-
-        ### EXAMPLE 1: Negative Sentiment
-        Review: "The app crashes every time I try to upload a photo of my receipt. I've tried multiple times and it's incredibly frustrating!"
-        Correct Response:
-        {{{{
-            "key_area": "Mobile App Performance",
-            "customer_problem": "App crashes during specific operations",
-            "sentiment_score": -0.8
-        }}}}
-        Reasoning: High negativity (-0.8) due to frustration and repeated failure.
-
-        ### EXAMPLE 2: Slightly Negative Sentiment
-        Review: "Your website loads slowly on my browser sometimes. It's not the worst but could be better."
-        Correct Response:
-        {{{{
-            "key_area": "Website Performance",
-            "customer_problem": "Slow loading times and timeouts",
-            "sentiment_score": -0.3
-        }}}}
-        Reasoning: Mildly negative (-0.3) with acknowledgment that it's "not the worst".
-
-        ### EXAMPLE 3: Neutral Sentiment
-        Review: "The mobile app has different features than the website. I can access my account on both but they look different."
-        Correct Response:
-        {{{{
-            "key_area": "Cross-Platform Consistency",
-            "customer_problem": "Features available on website missing from mobile app",
-            "sentiment_score": 0.0
-        }}}}
-        Reasoning: Neutral (0.0) as it's a factual observation without clear emotion.
-
-        ### EXAMPLE 4: Positive Sentiment
-        Review: "I like how the app lets me track my orders easily. The notifications are helpful."
-        Correct Response:
-        {{{{
-            "key_area": "App Functionality",
-            "customer_problem": "Positive feedback about order tracking features",
-            "sentiment_score": 0.6
-        }}}}
-        Reasoning: Moderately positive (0.6) with clear approval but not extreme enthusiasm.
-
-        ## Response Format (STRICTLY FOLLOW THIS)
-        ```json
-        {{
-            "key_area": "Exact category name",
-            "customer_problem": "Describe the problem in 5 words or less",
-            "sentiment_score": -0.7
-        }}
-        ```
-        """
-        
-        # Store the original raw response for fallback
-        raw_response = None
-        
-        # Retry mechanism - attempt up to 5 times to get valid JSON
-        max_retries = 5
-        for attempt in range(max_retries):
-            try:
-                logger.info(f"GPT classification attempt {attempt+1}/{max_retries}")
-                
-                response = AZURE_CLIENT.chat.completions.create(
-                    model="gpt-4.1",
-                    messages=[
-                        {"role": "system", "content": "You are a customer feedback classification specialist who always responds with valid JSON. The json must contain key_area (headline of the issue), customer_problem (brief 7-8 word summary of the user problem), and sentiment_score (float from -1.0 to 1.0)."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    temperature=0.1,
-                    response_format={"type": "json_object"}
-                )
-                
-                result_text = response.choices[0].message.content
-                print(result_text)
-                raw_response = result_text  # Store the raw response
-                # Try to parse as JSON
-                try:
-                    result = json.loads(result_text)
-                    
-                    # Validate that the response contains the required fields
-                    if "key_area" in result and "customer_problem" in result and "sentiment_score" in result:
-                        # Check if this matches an existing category
-                        is_existing_pair = False
-                        for cat in simplified_categories:
-                            if (cat["key_area"] == result["key_area"] and 
-                                cat["customer_problem"] == result["customer_problem"]):
-                                is_existing_pair = True
-                                break
-                        
-                        # Ensure sentiment_score is a valid float between -1 and 1
-                        sentiment_score = float(result["sentiment_score"])
-                        sentiment_score = max(-1.0, min(1.0, sentiment_score))  # Clamp to [-1.0, 1.0]
-                        
-                        logger.info(f"Classification result: {result['key_area']} (existing pair: {is_existing_pair}), sentiment: {sentiment_score}")
-                        return JSONResponse(content={
-                            "key_area": result["key_area"],
-                            "customer_problem": result["customer_problem"],
-                            "sentiment_score": sentiment_score
-                        })
-                    else:
-                        logger.warning(f"GPT response missing required fields: {result}")
-                        # Continue to next attempt
-                except json.JSONDecodeError as json_err:
-                    logger.warning(f"Invalid JSON on attempt {attempt+1}: {json_err}. Response: {result_text[:200]}...")
-                    # Continue to next attempt
-                    
-            except Exception as e:
-                logger.error(f"Error on attempt {attempt+1}: {str(e)}")
-                # Continue to next attempt
-            
-            # Add slight delay between retries
-            await asyncio.sleep(1)
-        
-        # If all attempts failed, try to extract from the raw response
-        logger.warning("All GPT attempts failed, using fallback extraction")
-        
-        # Try to extract structured data from the raw response
-        result = extract_classification_from_text(raw_response, simplified_categories, original_json_data)
-        
-        # Add a default sentiment score if not present
-        if "sentiment_score" not in result:
-            # Analyze text for basic sentiment as fallback
-            sentiment_words = {
-                "terrible": -0.9, "awful": -0.8, "horrible": -0.8, "bad": -0.6, 
-                "poor": -0.5, "disappointing": -0.5, "issue": -0.4, "problem": -0.4,
-                "not working": -0.6, "don't like": -0.5, "doesn't work": -0.6,
-                "fails": -0.7, "failed": -0.7, "broken": -0.7, "useless": -0.8,
-                "ok": 0.0, "okay": 0.0, "fine": 0.1, "works": 0.3,
-                "good": 0.5, "nice": 0.6, "great": 0.7, "excellent": 0.8,
-                "amazing": 0.9, "awesome": 0.9, "love": 0.8, "wonderful": 0.8
-            }
-            
-            # Simple fallback sentiment analysis
-            text_lower = review_text.lower()
-            sentiments = []
-            
-            for word, score in sentiment_words.items():
-                if word in text_lower:
-                    sentiments.append(score)
-            
-            # Default to -0.1 for issues/problems if no sentiment words found
-            sentiment_score = sum(sentiments) / len(sentiments) if sentiments else -0.1
-            sentiment_score = max(-1.0, min(1.0, sentiment_score))  # Clamp to [-1.0, 1.0]
-            
-            result["sentiment_score"] = sentiment_score
-        
-        logger.info(f"Fallback classification result with sentiment: {result}")
-        return JSONResponse(content=result)
-        
-    except Exception as e:
-        logger.error(f"Error classifying single review: {str(e)}\n{traceback.format_exc()}")
-        # Ultimate fallback - return a generic classification with neutral sentiment
-        return JSONResponse(content={
-            "key_area": "Miscellaneous Issue",
-            "customer_problem": "Issues related to miscellaneous customer concerns",
-            "sentiment_score": -0.1  # Slightly negative default for issues
-        })
 
 def extract_classification_from_text(text: str, existing_categories: List[Dict[str, str]], original_json: str = "[]") -> Dict[str, str]:
     """
