@@ -2800,13 +2800,13 @@ async def analyze_feedback(
             detail=f"Error analyzing feedback: {str(e)}"
         )
 @app.post("/classify-single-review")
-async def standalone_classify_single_review(
+async def classify_single_review(
     request: Request = None,
     review: str = Form(None),
     existing_json: str = Form(None)
 ) -> JSONResponse:
     """
-    Standalone version of the classify-single-review endpoint.
+    Classifies a single review into existing categories and returns the area_type.
     Accepts both JSON body and form data.
     
     Args:
@@ -2815,20 +2815,237 @@ async def standalone_classify_single_review(
         existing_json: Existing categories (when using form data)
         
     Returns:
-        JSONResponse with classification result containing key_area, customer_problem, and sentiment_score
+        JSONResponse with classification result containing key_area, customer_problem, sentiment_score, and area_type
     """
-    # Handle both form data and JSON body
-    if review is not None:
-        # Form data was provided
-        return await classify_single_review(review=review, existing_json=existing_json)
-    else:
-        # Process as JSON body
-        return await classify_single_review(request=request)
+    try:
+        # Handle both form data and JSON body
+        if review is not None:
+            # Form data was provided
+            review_text = review
+            try:
+                existing_categories = json.loads(existing_json) if existing_json else []
+            except json.JSONDecodeError:
+                raise HTTPException(status_code=400, detail="Invalid JSON format for existing categories")
+        else:
+            # Process as JSON body
+            try:
+                body = await request.json()
+                review_text = body.get("review", "")
+                existing_categories = body.get("existing_json", body.get("existing_categories", []))
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"Invalid request body: {str(e)}")
         
+        if not review_text:
+            raise HTTPException(status_code=400, detail="Review text is required")
+        
+        logger.info(f"Classifying single review: {review_text[:100]}...")
+        
+        # If no existing categories, create a default set
+        if not existing_categories:
+            logger.info("No existing categories provided, using default categories")
+            existing_categories = [
+                {"key_area": "General Issues", "customer_problem": "Various customer problems and feedback"},
+                {"key_area": "Feature Requests", "customer_problem": "Customer feature requests and enhancements"}
+            ]
+        
+        try:
+            # Prepare the prompt for classification
+            categories_text = "\n".join([
+                f"{i+1}. {cat.get('key_area', 'Unknown')}: {cat.get('customer_problem', 'No description')}"
+                for i, cat in enumerate(existing_categories)
+            ])
+            
+            prompt = f"""
+            Classify this customer review into one of the existing categories below.
+            
+            CUSTOMER REVIEW:
+            "{review_text}"
+            
+            EXISTING CATEGORIES:
+            {categories_text}
+            
+            Based on the review content:
+            1. Select the most appropriate category from the list above
+            2. Determine if this is a feature request or an issue/problem
+            3. Calculate a sentiment score between -1 (very negative) and 1 (very positive)
+            
+            If the review doesn't fit any existing category well, you may create a new category.
+            
+            Respond with a JSON object containing:
+            - key_area: The category name
+            - customer_problem: The specific problem description
+            - sentiment_score: A number between -1 and 1
+            - area_type: Either "feature" (for feature requests/enhancements) or "issue" (for problems/bugs)
+            
+            Rules for area_type:
+            - "feature": The review is requesting new functionality, enhancements, or improvements
+            - "issue": The review is reporting problems, bugs, errors, or complaints
+            
+            Example response:
+            {{
+                "key_area": "App Performance",
+                "customer_problem": "App crashes during photo uploads",
+                "sentiment_score": -0.8,
+                "area_type": "issue"
+            }}
+            """
+            
+            # Try with embeddings first for better matching
+            try:
+                # Generate embedding for the review
+                review_embedding = await get_embeddings(AZURE_CLIENT, [review_text])
+                
+                # Generate embeddings for existing categories
+                category_texts = [cat.get("customer_problem", "") for cat in existing_categories]
+                category_embeddings = await get_embeddings(AZURE_CLIENT, category_texts)
+                
+                # Calculate similarities
+                review_vec = np.array(review_embedding[0])
+                category_matrix = np.array(category_embeddings)
+                
+                # Normalize vectors
+                review_vec_norm = review_vec / np.linalg.norm(review_vec)
+                category_norms = np.linalg.norm(category_matrix, axis=1, keepdims=True)
+                category_norms = np.where(category_norms == 0, 1e-10, category_norms)
+                category_matrix_norm = category_matrix / category_norms
+                
+                # Calculate similarities
+                similarities = np.dot(category_matrix_norm, review_vec_norm)
+                
+                # Find best match
+                best_idx = np.argmax(similarities)
+                best_similarity = similarities[best_idx]
+                best_category = existing_categories[best_idx]
+                
+                logger.info(f"Best matching category: {best_category.get('key_area')} (similarity: {best_similarity:.3f})")
+                
+                # If similarity is high enough, use the matched category
+                if best_similarity > 0.7:
+                    # Use the matched category but still ask GPT to refine and add area_type
+                    prompt += f"\n\nNote: Based on semantic similarity, this review seems to match the category '{best_category.get('key_area')}'. Consider this in your classification."
+                    
+            except Exception as e:
+                logger.warning(f"Embedding matching failed, using GPT only: {str(e)}")
+            
+            # Call GPT for final classification
+            response = AZURE_CLIENT.chat.completions.create(
+                model="gpt-4.1-mini",
+                messages=[
+                    {"role": "system", "content": "You are a customer feedback classification system that accurately categorizes reviews and identifies whether they are feature requests or issues."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.1,
+                response_format={"type": "json_object"}
+            )
+            
+            result_text = response.choices[0].message.content
+            logger.info(f"GPT response: {result_text[:200]}...")
+            
+            # Try to parse the response
+            try:
+                result = json.loads(result_text)
+                
+                # Ensure all required fields are present
+                if not all(key in result for key in ["key_area", "customer_problem", "sentiment_score", "area_type"]):
+                    raise ValueError("Missing required fields in response")
+                
+                # Validate area_type
+                if result["area_type"] not in ["feature", "issue"]:
+                    # Try to infer from the review and problem
+                    result["area_type"] = infer_area_type(review_text, result.get("customer_problem", ""))
+                
+                # Validate sentiment score
+                try:
+                    result["sentiment_score"] = float(result["sentiment_score"])
+                    result["sentiment_score"] = max(-1.0, min(1.0, result["sentiment_score"]))
+                except (ValueError, TypeError):
+                    # Calculate sentiment if invalid
+                    sentiment_scores = await calculate_sentiment_scores([review_embedding[0] if 'review_embedding' in locals() else np.random.rand(1536)], AZURE_CLIENT)
+                    result["sentiment_score"] = sentiment_scores[0]
+                
+            except (json.JSONDecodeError, ValueError) as e:
+                logger.warning(f"Failed to parse GPT response as JSON: {str(e)}")
+                # Use the fallback extraction method
+                result = extract_classification_from_text(result_text, existing_categories, existing_json if existing_json else "[]")
+                
+                # Add area_type if not present
+                if "area_type" not in result:
+                    result["area_type"] = infer_area_type(review_text, result.get("customer_problem", ""))
+            
+            logger.info(f"Final classification: {result}")
+            
+            return JSONResponse(content=result, status_code=200)
+            
+        except Exception as e:
+            logger.error(f"Error during classification: {str(e)}")
+            # Final fallback - use first category or create generic one
+            fallback_result = {
+                "key_area": existing_categories[0].get("key_area", "General Feedback") if existing_categories else "General Feedback",
+                "customer_problem": existing_categories[0].get("customer_problem", "General customer feedback") if existing_categories else "General customer feedback",
+                "sentiment_score": 0.0,
+                "area_type": "issue"
+            }
+            
+            # Try to at least get proper sentiment
+            try:
+                embeddings = await get_embeddings(AZURE_CLIENT, [review_text])
+                sentiment_scores = await calculate_sentiment_scores(embeddings, AZURE_CLIENT)
+                fallback_result["sentiment_score"] = sentiment_scores[0]
+            except:
+                pass
+            
+            # Try to infer area type
+            fallback_result["area_type"] = infer_area_type(review_text, fallback_result["customer_problem"])
+            
+            return JSONResponse(content=fallback_result, status_code=200)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error in classify_single_review: {str(e)}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
+def infer_area_type(review_text: str, customer_problem: str) -> str:
+    """
+    Infers whether a review is a feature request or an issue based on text analysis.
+    
+    Args:
+        review_text: The review text
+        customer_problem: The identified customer problem
+        
+    Returns:
+        "feature" or "issue"
+    """
+    feature_keywords = [
+        "want", "need", "request", "add", "feature", "enhance", "improve",
+        "would like", "wish", "suggest", "should have", "could have",
+        "implement", "missing", "lacks", "needs", "requires", "please add",
+        "it would be great", "consider adding", "functionality"
+    ]
+    
+    issue_keywords = [
+        "broken", "bug", "crash", "error", "fail", "doesn't work", "not working",
+        "issue", "problem", "glitch", "freeze", "slow", "hang", "stuck",
+        "unable", "cannot", "malfunction", "defect", "fault", "wrong"
+    ]
+    
+    combined_text = f"{review_text} {customer_problem}".lower()
+    
+    # Count keyword matches
+    feature_count = sum(1 for keyword in feature_keywords if keyword in combined_text)
+    issue_count = sum(1 for keyword in issue_keywords if keyword in combined_text)
+    
+    # Default to issue if unclear
+    if feature_count > issue_count:
+        return "feature"
+    else:
+        return "issue"
+
 
 def extract_classification_from_text(text: str, existing_categories: List[Dict[str, str]], original_json: str = "[]") -> Dict[str, str]:
     """
-    Fallback method to extract key_area, customer_problem, and sentiment_score from GPT response when JSON parsing fails.
+    Fallback method to extract key_area, customer_problem, sentiment_score, and area_type from GPT response when JSON parsing fails.
     
     Args:
         text: Raw text response from GPT
@@ -2836,7 +3053,7 @@ def extract_classification_from_text(text: str, existing_categories: List[Dict[s
         original_json: Original JSON input string
         
     Returns:
-        Dictionary with key_area, customer_problem, and sentiment_score
+        Dictionary with key_area, customer_problem, sentiment_score, and area_type
     """
     # If no text provided, try to extract from original JSON or use default
     if not text or not text.strip():
@@ -2852,7 +3069,8 @@ def extract_classification_from_text(text: str, existing_categories: List[Dict[s
                             return {
                                 "key_area": json_data[0]["key_area"],
                                 "customer_problem": json_data[0]["customer_problem"],
-                                "sentiment_score": 0.0  # Default neutral sentiment
+                                "sentiment_score": 0.0,  # Default neutral sentiment
+                                "area_type": "issue"  # Default to issue
                             }
                 except:
                     pass
@@ -2862,7 +3080,8 @@ def extract_classification_from_text(text: str, existing_categories: List[Dict[s
                 return {
                     "key_area": existing_categories[0]["key_area"],
                     "customer_problem": existing_categories[0]["customer_problem"],
-                    "sentiment_score": 0.0  # Default neutral sentiment
+                    "sentiment_score": 0.0,  # Default neutral sentiment
+                    "area_type": "issue"  # Default to issue
                 }
         except:
             pass
@@ -2871,7 +3090,8 @@ def extract_classification_from_text(text: str, existing_categories: List[Dict[s
         return {
             "key_area": "Miscellaneous Issue",
             "customer_problem": "Issues related to miscellaneous customer concerns",
-            "sentiment_score": -0.1  # Slightly negative default for issues
+            "sentiment_score": -0.1,  # Slightly negative default for issues
+            "area_type": "issue"
         }
     
     try:
@@ -2888,25 +3108,37 @@ def extract_classification_from_text(text: str, existing_categories: List[Dict[s
                 # Invalid float, use default
                 sentiment_score = 0.0
         
+        # Extract area_type from text if present
+        area_type_pattern = r'"area_type"\s*:\s*"(feature|issue)"'
+        area_type_match = re.search(area_type_pattern, text)
+        area_type = area_type_match.group(1) if area_type_match else None
+        
         # Multi-tiered parsing approach
         
         # 1. Try with the raw text as is
         try:
             raw_json = json.loads(text)
             if "key_area" in raw_json and "customer_problem" in raw_json:
-                # Add sentiment if present or use the extracted one
-                if "sentiment_score" in raw_json:
-                    try:
-                        sentiment_score = float(raw_json["sentiment_score"])
-                        sentiment_score = max(-1.0, min(1.0, sentiment_score))  # Clamp to [-1.0, 1.0]
-                    except (ValueError, TypeError):
-                        pass  # Keep the previously extracted sentiment
-                
-                return {
+                result = {
                     "key_area": raw_json["key_area"],
                     "customer_problem": raw_json["customer_problem"],
-                    "sentiment_score": sentiment_score
+                    "sentiment_score": sentiment_score,
+                    "area_type": raw_json.get("area_type", area_type or "issue")
                 }
+                
+                # Update sentiment if present in JSON
+                if "sentiment_score" in raw_json:
+                    try:
+                        result["sentiment_score"] = float(raw_json["sentiment_score"])
+                        result["sentiment_score"] = max(-1.0, min(1.0, result["sentiment_score"]))
+                    except (ValueError, TypeError):
+                        pass
+                
+                # Infer area_type if not valid
+                if result["area_type"] not in ["feature", "issue"]:
+                    result["area_type"] = infer_area_type("", result["customer_problem"])
+                
+                return result
         except:
             pass
         
@@ -2917,19 +3149,26 @@ def extract_classification_from_text(text: str, existing_categories: List[Dict[s
         try:
             cleaned_json = json.loads(cleaned_text)
             if "key_area" in cleaned_json and "customer_problem" in cleaned_json:
-                # Add sentiment if present or use the extracted one
-                if "sentiment_score" in cleaned_json:
-                    try:
-                        sentiment_score = float(cleaned_json["sentiment_score"])
-                        sentiment_score = max(-1.0, min(1.0, sentiment_score))  # Clamp to [-1.0, 1.0]
-                    except (ValueError, TypeError):
-                        pass  # Keep the previously extracted sentiment
-                
-                return {
+                result = {
                     "key_area": cleaned_json["key_area"],
                     "customer_problem": cleaned_json["customer_problem"],
-                    "sentiment_score": sentiment_score
+                    "sentiment_score": sentiment_score,
+                    "area_type": cleaned_json.get("area_type", area_type or "issue")
                 }
+                
+                # Update sentiment if present
+                if "sentiment_score" in cleaned_json:
+                    try:
+                        result["sentiment_score"] = float(cleaned_json["sentiment_score"])
+                        result["sentiment_score"] = max(-1.0, min(1.0, result["sentiment_score"]))
+                    except (ValueError, TypeError):
+                        pass
+                
+                # Infer area_type if not valid
+                if result["area_type"] not in ["feature", "issue"]:
+                    result["area_type"] = infer_area_type("", result["customer_problem"])
+                
+                return result
         except:
             pass
         
@@ -2943,29 +3182,33 @@ def extract_classification_from_text(text: str, existing_categories: List[Dict[s
                     # Try to parse this JSON fragment
                     result = json.loads(json_str)
                     if "key_area" in result and "customer_problem" in result:
-                        # Add sentiment if present or use the extracted one
+                        extracted = {
+                            "key_area": result["key_area"],
+                            "customer_problem": result["customer_problem"],
+                            "sentiment_score": sentiment_score,
+                            "area_type": result.get("area_type", area_type or "issue")
+                        }
+                        
+                        # Update sentiment if present
                         if "sentiment_score" in result:
                             try:
-                                sentiment_score = float(result["sentiment_score"])
-                                sentiment_score = max(-1.0, min(1.0, sentiment_score))  # Clamp to [-1.0, 1.0]
+                                extracted["sentiment_score"] = float(result["sentiment_score"])
+                                extracted["sentiment_score"] = max(-1.0, min(1.0, extracted["sentiment_score"]))
                             except (ValueError, TypeError):
-                                pass  # Keep the previously extracted sentiment
+                                pass
+                        
+                        # Infer area_type if not valid
+                        if extracted["area_type"] not in ["feature", "issue"]:
+                            extracted["area_type"] = infer_area_type("", extracted["customer_problem"])
                         
                         # Check if this is an existing pair
                         for cat in existing_categories:
                             if (cat["key_area"] == result["key_area"] and 
                                 cat["customer_problem"] == result["customer_problem"]):
-                                return {
-                                    "key_area": cat["key_area"],
-                                    "customer_problem": cat["customer_problem"],
-                                    "sentiment_score": sentiment_score
-                                }
+                                return extracted
+                        
                         # If not an exact match, still return the extracted pair
-                        return {
-                            "key_area": result["key_area"],
-                            "customer_problem": result["customer_problem"],
-                            "sentiment_score": sentiment_score
-                        }
+                        return extracted
                 except:
                     continue
         
@@ -2980,21 +3223,20 @@ def extract_classification_from_text(text: str, existing_categories: List[Dict[s
             key_area = key_area_match.group(1)
             customer_problem = problem_match.group(1)
             
+            result = {
+                "key_area": key_area,
+                "customer_problem": customer_problem,
+                "sentiment_score": sentiment_score,
+                "area_type": area_type or infer_area_type("", customer_problem)
+            }
+            
             # Check if this is an existing pair
             for cat in existing_categories:
                 if (cat["key_area"] == key_area and cat["customer_problem"] == customer_problem):
-                    return {
-                        "key_area": cat["key_area"],
-                        "customer_problem": cat["customer_problem"],
-                        "sentiment_score": sentiment_score
-                    }
+                    return result
             
             # If not an exact match, return the extracted values
-            return {
-                "key_area": key_area,
-                "customer_problem": customer_problem,
-                "sentiment_score": sentiment_score
-            }
+            return result
         
         # 5. Look for exact matches with existing categories in the text
         for category in existing_categories:
@@ -3004,7 +3246,8 @@ def extract_classification_from_text(text: str, existing_categories: List[Dict[s
                 return {
                     "key_area": category["key_area"],
                     "customer_problem": category["customer_problem"],
-                    "sentiment_score": sentiment_score
+                    "sentiment_score": sentiment_score,
+                    "area_type": area_type or infer_area_type("", category["customer_problem"])
                 }
         
         # 6. Look for partial matches with existing categories
@@ -3020,7 +3263,8 @@ def extract_classification_from_text(text: str, existing_categories: List[Dict[s
                         return {
                             "key_area": category["key_area"],
                             "customer_problem": category["customer_problem"],
-                            "sentiment_score": sentiment_score
+                            "sentiment_score": sentiment_score,
+                            "area_type": area_type or infer_area_type("", category["customer_problem"])
                         }
         
         # 7. Check for key_area matches
@@ -3030,7 +3274,8 @@ def extract_classification_from_text(text: str, existing_categories: List[Dict[s
                 return {
                     "key_area": category["key_area"],
                     "customer_problem": category["customer_problem"],
-                    "sentiment_score": sentiment_score
+                    "sentiment_score": sentiment_score,
+                    "area_type": area_type or infer_area_type("", category["customer_problem"])
                 }
         
         # 8. If all else fails, try to return raw JSON as last resort
@@ -3043,8 +3288,14 @@ def extract_classification_from_text(text: str, existing_categories: List[Dict[s
                     result = {
                         "key_area": raw_json_attempt.get("key_area", "Miscellaneous Issue"),
                         "customer_problem": raw_json_attempt.get("customer_problem", "General customer feedback"),
-                        "sentiment_score": sentiment_score
+                        "sentiment_score": sentiment_score,
+                        "area_type": raw_json_attempt.get("area_type", "issue")
                     }
+                    
+                    # Infer area_type if not valid
+                    if result["area_type"] not in ["feature", "issue"]:
+                        result["area_type"] = infer_area_type("", result["customer_problem"])
+                    
                     return result
         except:
             pass
@@ -3055,14 +3306,16 @@ def extract_classification_from_text(text: str, existing_categories: List[Dict[s
             return {
                 "key_area": existing_categories[0]["key_area"],
                 "customer_problem": existing_categories[0]["customer_problem"],
-                "sentiment_score": sentiment_score
+                "sentiment_score": sentiment_score,
+                "area_type": area_type or infer_area_type("", existing_categories[0]["customer_problem"])
             }
         
         # 10. Absolute last resort
         return {
             "key_area": "Miscellaneous Issue",
             "customer_problem": "Issues related to miscellaneous customer concerns",
-            "sentiment_score": sentiment_score
+            "sentiment_score": sentiment_score,
+            "area_type": "issue"
         }
     
     except Exception as e:
@@ -3075,7 +3328,8 @@ def extract_classification_from_text(text: str, existing_categories: List[Dict[s
                     return {
                         "key_area": json_data[0].get("key_area", "Miscellaneous Issue"),
                         "customer_problem": json_data[0].get("customer_problem", "General customer feedback"),
-                        "sentiment_score": -0.1  # Slightly negative default for issues
+                        "sentiment_score": -0.1,  # Slightly negative default for issues
+                        "area_type": "issue"
                     }
         except:
             pass
@@ -3084,8 +3338,10 @@ def extract_classification_from_text(text: str, existing_categories: List[Dict[s
         return {
             "key_area": "Miscellaneous Issue",
             "customer_problem": "Issues related to miscellaneous customer concerns",
-            "sentiment_score": -0.1  # Slightly negative default for issues
+            "sentiment_score": -0.1,  # Slightly negative default for issues
+            "area_type": "issue"
         }
+
         
 @app.get("/", response_class=HTMLResponse)
 async def serve_webpage():
