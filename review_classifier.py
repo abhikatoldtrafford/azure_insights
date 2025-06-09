@@ -2773,10 +2773,12 @@ async def format_analysis_results(analysis_results: Dict[str, Any], return_raw_f
             # Get area name and problem from the dictionary
             area_name = area_obj.get("area", "Unknown Area")
             area_problem = area_obj.get("problem", f"Issues related to {area_name.lower()}")
+            area_type = area_obj.get("area_type", "issue")  # NEW LINE - Get area_type
         else:
             # Fallback for string-only areas
             area_name = str(area_obj)
             area_problem = f"Issues related to {area_name.lower()}"
+            area_type = "issue"  # NEW LINE - Default to issue
         
         # Get the feedback for this area
         area_feedbacks = classified_feedback.get(area_name, [])
@@ -2784,7 +2786,8 @@ async def format_analysis_results(analysis_results: Dict[str, Any], return_raw_f
         result = {
             "key_area": area_name,
             "customer_problem": area_problem,
-            "number_of_users": len(area_feedbacks)
+            "number_of_users": len(area_feedbacks),
+            "type": area_type  # NEW LINE - Add type field
         }
         
         # Only include raw feedback if requested
@@ -2818,7 +2821,6 @@ async def format_analysis_results(analysis_results: Dict[str, Any], return_raw_f
         },
         "insight_summary": insight_summary  # Add the insight summary to the return value
     }
-
 def integrate_with_main_app(app):
     """
     Integrates the customer feedback analysis router with a FastAPI app.
