@@ -30,6 +30,8 @@
             --positive: #4ade80;
             --negative: #f87171;
             --neutral: #94a3b8;
+            --feature-color: #8b5cf6;
+            --issue-color: #ef4444;
         }
 
         body {
@@ -275,11 +277,21 @@
             padding: 20px;
             margin-bottom: 16px;
             transition: all 0.3s;
+            position: relative;
+            overflow: hidden;
         }
 
         .key-area-card:hover {
             border-color: var(--accent);
             box-shadow: 0 4px 16px rgba(91, 127, 255, 0.1);
+        }
+
+        .key-area-card.feature-area {
+            border-left: 4px solid var(--feature-color);
+        }
+
+        .key-area-card.issue-area {
+            border-left: 4px solid var(--issue-color);
         }
 
         .key-area-header {
@@ -289,10 +301,36 @@
             margin-bottom: 12px;
         }
 
+        .key-area-title-wrapper {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
         .key-area-title {
             font-size: 18px;
             font-weight: 600;
             color: var(--accent);
+        }
+
+        .area-type-badge {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .area-type-feature {
+            background-color: rgba(139, 92, 246, 0.2);
+            color: var(--feature-color);
+        }
+
+        .area-type-issue {
+            background-color: rgba(239, 68, 68, 0.2);
+            color: var(--issue-color);
         }
 
         .user-count {
@@ -364,6 +402,10 @@
             border: 1px solid var(--border);
             border-radius: 12px;
             padding: 20px;
+        }
+
+        .insight-card.overall-summary {
+            grid-column: 1 / -1;
         }
 
         .insight-icon {
@@ -649,6 +691,34 @@
             color: #0a1e2b;
         }
 
+        /* Summary Stats */
+        .summary-stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+
+        .stat-card {
+            background-color: var(--bg-primary);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 16px;
+            text-align: center;
+        }
+
+        .stat-value {
+            font-size: 28px;
+            font-weight: 700;
+            color: var(--accent);
+            margin-bottom: 4px;
+        }
+
+        .stat-label {
+            font-size: 14px;
+            color: var(--text-secondary);
+        }
+
         /* Responsive */
         @media (max-width: 768px) {
             .header-content {
@@ -785,11 +855,14 @@
 
                 <!-- Results Section -->
                 <div id="analysisResults" class="analysis-results d-none">
+                    <!-- Summary Stats -->
+                    <div id="summaryStats" class="summary-stats"></div>
+
                     <!-- Insight Summary -->
                     <div id="insightSummary" class="insight-summary"></div>
 
                     <!-- Key Areas -->
-                    <h3 style="margin: 32px 0 16px; font-size: 20px;">Key Problem Areas</h3>
+                    <h3 style="margin: 32px 0 16px; font-size: 20px;">Key Problem Areas & Feature Requests</h3>
                     <div id="keyAreas"></div>
                 </div>
             </div>
@@ -834,6 +907,12 @@
                             <span class="field-value" id="classCustomerProblem"></span>
                         </div>
                         <div class="classification-field">
+                            <span class="field-label">Type:</span>
+                            <span class="field-value">
+                                <span id="classAreaType" class="area-type-badge"></span>
+                            </span>
+                        </div>
+                        <div class="classification-field">
                             <span class="field-label">Sentiment Score:</span>
                             <span class="field-value">
                                 <span id="classSentiment"></span>
@@ -861,10 +940,11 @@
                         <h4 style="margin: 20px 0 12px;">Key Features</h4>
                         <ul style="line-height: 1.8; color: var(--text-secondary); margin-left: 20px;">
                             <li>AI-powered feedback categorization using GPT-4</li>
+                            <li>Automatic classification of issues vs feature requests</li>
                             <li>Sentiment analysis with scores from -1 to 1</li>
                             <li>Automatic key problem area identification</li>
-                            <li>Support for CSV and Excel files</li>
-                            <li>Single review classification</li>
+                            <li>Support for CSV, Excel, PDF, DOCX, and TXT files</li>
+                            <li>Single review classification with type detection</li>
                             <li>Insight summaries (what users love, feature requests, pain points)</li>
                         </ul>
                     </div>
@@ -880,8 +960,8 @@
                             <span class="endpoint-path">/analyze-feedback</span>
                         </div>
                         <p class="endpoint-description">
-                            Analyzes customer feedback from CSV or Excel files. Automatically identifies key problem areas, 
-                            classifies feedback, calculates sentiment scores, and generates insight summaries.
+                            Analyzes customer feedback from various file formats. Automatically identifies key problem areas and feature requests, 
+                            classifies feedback into appropriate categories, calculates sentiment scores, and generates comprehensive insight summaries.
                         </p>
                         
                         <h4 class="text-small" style="margin: 20px 0 12px;">Parameters</h4>
@@ -899,7 +979,7 @@
                                     <td><code>file</code></td>
                                     <td>file</td>
                                     <td class="param-required">Required</td>
-                                    <td>CSV or Excel file containing feedback</td>
+                                    <td>CSV, Excel, PDF, DOCX, or TXT file containing feedback</td>
                                 </tr>
                                 <tr>
                                     <td><code>return_raw_feedback</code></td>
@@ -922,7 +1002,7 @@
                             <div class="test-form">
                                 <div class="test-form-row">
                                     <label>File:</label>
-                                    <input type="file" id="test-analyze-file" accept=".csv,.xlsx,.xls">
+                                    <input type="file" id="test-analyze-file" accept=".csv,.xlsx,.xls,.pdf,.docx,.txt">
                                 </div>
                                 <div class="test-form-row">
                                     <label>Return Raw:</label>
@@ -982,7 +1062,8 @@
   "insight_summary": {
     "user_loves": "Users appreciate the intuitive interface and real-time data updates",
     "feature_request": "Most requested feature is offline mode for accessing reports",
-    "pain_point": "App performance issues and frequent crashes are the biggest concerns"
+    "pain_point": "App performance issues and frequent crashes are the biggest concerns",
+    "overall_summary": "The feedback shows a mix of appreciation for the interface and frustration with stability issues"
   }
 }</pre>
                         </div>
@@ -1000,7 +1081,7 @@
                         </div>
                         <p class="endpoint-description">
                             Classifies a single customer review against existing categories using GPT-4. 
-                            Returns the best matching category or creates a new one if needed, along with sentiment score.
+                            Returns the best matching category or creates a new one if needed, along with sentiment score and category type (feature/issue).
                         </p>
                         
                         <h4 class="text-small" style="margin: 20px 0 12px;">Parameters</h4>
@@ -1084,7 +1165,8 @@
                             <pre>{
   "key_area": "App Performance",
   "customer_problem": "App crashes during photo upload operations",
-  "sentiment_score": -0.85
+  "sentiment_score": -0.85,
+  "area_type": "issue"
 }</pre>
                         </div>
                     </div>
@@ -1100,14 +1182,16 @@
                             <li><strong>Column Detection:</strong> The API automatically detects feedback, rating, date, name, and source columns</li>
                             <li><strong>5-Star Filter:</strong> Reviews with 5-star ratings are automatically excluded from problem analysis</li>
                             <li><strong>Excel Support:</strong> Multi-sheet Excel files are processed, analyzing all sheets</li>
+                            <li><strong>File Formats:</strong> Supports CSV, Excel, PDF, DOCX, and TXT files</li>
                             <li><strong>Encoding:</strong> UTF-8 encoding is preferred, but the API handles various encodings</li>
                         </ul>
 
                         <h4 style="margin: 24px 0 16px;">Response Handling</h4>
                         <ul style="line-height: 1.8; color: var(--text-secondary); margin-left: 20px;">
                             <li><strong>Sentiment Scores:</strong> Range from -1 (very negative) to 1 (very positive)</li>
-                            <li><strong>Key Areas:</strong> Automatically identified and limited to most significant issues</li>
-                            <li><strong>Timeout:</strong> Large files may take up to 120 seconds to process</li>
+                            <li><strong>Key Areas:</strong> Automatically identified and categorized as features or issues</li>
+                            <li><strong>Type Classification:</strong> Each area is internally classified as "feature" or "issue"</li>
+                            <li><strong>Timeout:</strong> Large files may take up to 180 seconds to process</li>
                             <li><strong>Rate Limits:</strong> Based on Azure OpenAI service quotas</li>
                         </ul>
 
@@ -1127,9 +1211,14 @@
                                     <td>Invalid file format, missing required parameters</td>
                                 </tr>
                                 <tr>
+                                    <td>413</td>
+                                    <td>Payload Too Large</td>
+                                    <td>File exceeds 50MB limit</td>
+                                </tr>
+                                <tr>
                                     <td>422</td>
                                     <td>Unprocessable Entity</td>
-                                    <td>File contains no valid feedback data</td>
+                                    <td>File contains no valid feedback data or cannot be converted</td>
                                 </tr>
                                 <tr>
                                     <td>500</td>
@@ -1139,7 +1228,7 @@
                                 <tr>
                                     <td>504</td>
                                     <td>Gateway Timeout</td>
-                                    <td>Processing exceeded 120 seconds</td>
+                                    <td>Processing exceeded 180 seconds</td>
                                 </tr>
                             </tbody>
                         </table>
@@ -1272,14 +1361,46 @@
             const resultsSection = document.getElementById('analysisResults');
             resultsSection.classList.remove('d-none');
 
+            // Display Summary Stats
+            displaySummaryStats(data);
+
             // Display Insight Summary
             displayInsightSummary(data.insight_summary);
 
-            // Display Key Areas
+            // Display Key Areas with feature/issue classification
             displayKeyAreas(data.analysis_results);
 
             // Scroll to results
             resultsSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+
+        function displaySummaryStats(data) {
+            const container = document.getElementById('summaryStats');
+            
+            // Count features vs issues based on insight summary
+            const featureCount = data.analysis_results.filter(area => 
+                isFeatureArea(area.key_area, area.customer_problem)
+            ).length;
+            const issueCount = data.analysis_results.length - featureCount;
+            
+            container.innerHTML = `
+                <div class="stat-card">
+                    <div class="stat-value">${data.summary.total_feedback_items}</div>
+                    <div class="stat-label">Total Feedback Items</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">${data.summary.total_key_areas}</div>
+                    <div class="stat-label">Key Areas Identified</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">${issueCount}</div>
+                    <div class="stat-label">Issue Areas</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">${featureCount}</div>
+                    <div class="stat-label">Feature Requests</div>
+                </div>
+            `;
         }
 
         function displayInsightSummary(summary) {
@@ -1301,21 +1422,51 @@
                     <div class="insight-title">Main Pain Points</div>
                     <div class="insight-content">${summary.pain_point || 'No data available'}</div>
                 </div>
+                ${summary.overall_summary ? `
+                <div class="insight-card overall-summary">
+                    <div class="insight-icon">📊</div>
+                    <div class="insight-title">Overall Summary</div>
+                    <div class="insight-content">${summary.overall_summary}</div>
+                </div>
+                ` : ''}
             `;
+        }
+
+        function isFeatureArea(keyArea, customerProblem) {
+            // Heuristic to determine if an area is feature-related
+            const featureKeywords = [
+                'feature', 'enhancement', 'add', 'want', 'need', 'request',
+                'improve', 'upgrade', 'new', 'additional', 'missing', 'would like',
+                'should have', 'consider', 'implement', 'functionality'
+            ];
+            
+            const combinedText = `${keyArea} ${customerProblem}`.toLowerCase();
+            return featureKeywords.some(keyword => combinedText.includes(keyword));
         }
 
         function displayKeyAreas(areas) {
             const container = document.getElementById('keyAreas');
             
-            container.innerHTML = areas.map((area, index) => {
+            // Sort areas by number of users (descending)
+            const sortedAreas = [...areas].sort((a, b) => b.number_of_users - a.number_of_users);
+            
+            container.innerHTML = sortedAreas.map((area, index) => {
                 const showRawFeedback = area.raw_feedbacks && area.raw_feedbacks.length > 0;
                 const feedbackId = `feedback-${index}`;
+                const isFeature = isFeatureArea(area.key_area, area.customer_problem);
+                const areaType = isFeature ? 'feature' : 'issue';
+                const areaClass = isFeature ? 'feature-area' : 'issue-area';
+                const badgeClass = isFeature ? 'area-type-feature' : 'area-type-issue';
+                const badgeText = isFeature ? 'Feature' : 'Issue';
                 
                 return `
-                    <div class="key-area-card">
+                    <div class="key-area-card ${areaClass}">
                         <div class="key-area-header">
                             <div>
-                                <div class="key-area-title">${area.key_area}</div>
+                                <div class="key-area-title-wrapper">
+                                    <div class="key-area-title">${area.key_area}</div>
+                                    <span class="area-type-badge ${badgeClass}">${badgeText}</span>
+                                </div>
                                 <div class="customer-problem">${area.customer_problem}</div>
                             </div>
                             <div class="user-count">${area.number_of_users} users</div>
@@ -1451,6 +1602,12 @@
             
             const badge = document.getElementById('classSentimentBadge');
             badge.innerHTML = getSentimentBadge(data.sentiment_score);
+            
+            // Display area type
+            const areaTypeBadge = document.getElementById('classAreaType');
+            const areaType = data.area_type || 'issue'; // Default to issue if not provided
+            areaTypeBadge.textContent = areaType.charAt(0).toUpperCase() + areaType.slice(1);
+            areaTypeBadge.className = `area-type-badge area-type-${areaType}`;
 
             resultDiv.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }
