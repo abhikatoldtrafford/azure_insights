@@ -319,7 +319,7 @@ async def generate_summary(
         logger.info(f"Generating summary insights from {len(review_texts)} reviews")
         
         # More robust check for insufficient data
-        if len(review_texts) < 5:
+        if len(review_texts) < 2:
             logger.warning(f"Insufficient reviews ({len(review_texts)}) for reliable summary generation")
             return {
                 "user_loves": "Not enough reviews to determine what users love",
@@ -330,7 +330,7 @@ async def generate_summary(
             
         # Check for meaningful content
         meaningful_reviews = [r for r in review_texts if r and len(r.strip()) > 10]
-        if len(meaningful_reviews) < 5:
+        if len(meaningful_reviews) < 2:
             logger.warning(f"Only {len(meaningful_reviews)} meaningful reviews found - not enough for summary")
             return {
                 "user_loves": "Not enough meaningful reviews to determine what users love",
@@ -446,18 +446,19 @@ async def generate_summary(
             if len(scores) == 0:
                 return []
             
+            # For small datasets, adjust threshold dynamically
+            if len(texts) <= 5:
+                min_threshold = 0.1  # Lower threshold for small datasets
+            
             # Get indices of reviews with scores above threshold
             valid_indices = np.where(scores > min_threshold)[0]
             
-            # If no reviews meet the threshold, return empty list
-            if len(valid_indices) == 0:
-                return []
-                
-            # Sort the valid indices by score
-            sorted_indices = valid_indices[np.argsort(scores[valid_indices])[-min(n, len(valid_indices)):]]
-            
-            # Return the corresponding reviews
-            return [texts[i] for i in sorted_indices]
+            # If no reviews meet the threshold and we have few reviews, use top scoring ones
+            if len(valid_indices) == 0 and len(texts) <= 5:
+                # Take the top 50% of reviews by score
+                num_to_take = max(1, len(texts) // 2)
+                sorted_indices = np.argsort(scores)[-num_to_take:]
+                return [texts[i] for i in sorted_indices]
         
         # Check similarity scores before collecting reviews
         top_user_loves = get_top_reviews(user_loves_scores, review_texts)
@@ -480,7 +481,7 @@ async def generate_summary(
         # Function to generate summary using OpenAI (same as before, just updated prompts)
         async def generate_category_summary(reviews, category_name):
             # If no matching reviews found, return appropriate message
-            if not reviews or len(reviews) < 2:
+            if not reviews:
                 return f"No clear {category_name} identified in the reviews"
             
             # Take a maximum of 15 reviews to avoid token limits
@@ -608,7 +609,7 @@ async def generate_summary(
             add_unique_reviews(overall_reviews, top_pain_points, 10)
         
         # Only generate overall summary if we have enough meaningful data
-        if len(overall_reviews) >= 5:
+        if len(overall_reviews) >= 1:
             overall_summary = await generate_category_summary(overall_reviews, "overall_summary")
         else:
             overall_summary = "Insufficient meaningful feedback to generate an overall summary"
@@ -1080,7 +1081,12 @@ async def process_excel_data(
         logger.info(f"Extracted {len(all_feedback_items)} feedback items from {len(sheet_dfs)} sheets")
             
         # Sample for key area identification (limit to 100 items to avoid token limits)
-        sample_feedbacks = [item["text"] for item in all_feedback_items[:min(1000,len(all_feedback_items) // 2)]]
+        # Sample for key area identification - ensure we use all reviews for small datasets
+        if len(all_feedback_items) <= 10:
+            sample_feedbacks = [item["text"] for item in all_feedback_items]
+        else:
+            sample_feedbacks = [item["text"] for item in all_feedback_items[:min(1000, len(all_feedback_items) // 2)]]
+        #sample_feedbacks = [item["text"] for item in all_feedback_items[:min(1000,len(all_feedback_items) // 2)]]
         sample_feedback_text = '\n'.join(sample_feedbacks)
         
         # Identify key areas
@@ -1177,7 +1183,11 @@ async def process_excel_data(
                         similarity_matrix[i, j] *= 0.7  # Reduce similarity for mismatched types
             
             # Classify feedback based on similarity
-            similarity_threshold = 0.7
+            # Adjust similarity threshold based on dataset size
+            if len(all_feedback_items) <= 5:
+                similarity_threshold = 0.5  # Lower threshold for small datasets
+            else:
+                similarity_threshold = 0.7
             
             for i, similarities in enumerate(similarity_matrix):
                 # Get indices where similarity exceeds threshold
@@ -1373,7 +1383,10 @@ async def identify_key_areas(client: AzureOpenAI, data_sample: str, max_areas: i
     """
     try:
         logger.info(f"Beginning key problem area identification using {len(data_sample)} characters of sample data")
-    
+        # For very small datasets, use a simpler approach
+        if len(data_sample) < 500 or data_sample.count('\n') < 3:
+            logger.info("Small dataset detected, using simplified key area identification")
+            max_areas = min(max_areas, 3)  # Limit areas for small datasets
         # Prepare the prompt for OpenAI
         prompt = f"""
         # Customer Feedback Analysis Task
@@ -2404,7 +2417,12 @@ async def process_csv_data(
         logger.info(f"Extracted {len(all_feedback_items)} feedback items")
             
         # Sample for key area identification
-        sample_feedbacks = [item["text"] for item in all_feedback_items[:min(1000, len(all_feedback_items) // 2)]]
+        # Sample for key area identification - ensure we use all reviews for small datasets
+        if len(all_feedback_items) <= 10:
+            sample_feedbacks = [item["text"] for item in all_feedback_items]
+        else:
+            sample_feedbacks = [item["text"] for item in all_feedback_items[:min(1000, len(all_feedback_items) // 2)]]
+        #sample_feedbacks = [item["text"] for item in all_feedback_items[:min(1000, len(all_feedback_items) // 2)]]
         sample_feedback_text = '\n'.join(sample_feedbacks)
         
         # Identify key areas in parallel with other initialization
@@ -2491,7 +2509,12 @@ async def process_csv_data(
             area_type_map = {area["area"]: area.get("area_type", "issue") for area in key_areas}
             
             # Classify feedback based on similarity with type preference
-            similarity_threshold = 0.7
+
+            # Adjust similarity threshold based on dataset size
+            if len(all_feedback_items) <= 5:
+                similarity_threshold = 0.5  # Lower threshold for small datasets
+            else:
+                similarity_threshold = 0.7
             
             # Apply type-based weighting
             for i in range(similarity_matrix.shape[0]):
