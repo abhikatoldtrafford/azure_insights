@@ -459,6 +459,16 @@ async def generate_summary(
                 num_to_take = max(1, len(texts) // 2)
                 sorted_indices = np.argsort(scores)[-num_to_take:]
                 return [texts[i] for i in sorted_indices]
+            
+            # If no reviews meet the threshold, return empty list
+            if len(valid_indices) == 0:
+                return []
+                
+            # Sort the valid indices by score
+            sorted_indices = valid_indices[np.argsort(scores[valid_indices])[-min(n, len(valid_indices)):]]
+            
+            # Return the corresponding reviews
+            return [texts[i] for i in sorted_indices]
         
         # Check similarity scores before collecting reviews
         top_user_loves = get_top_reviews(user_loves_scores, review_texts)
