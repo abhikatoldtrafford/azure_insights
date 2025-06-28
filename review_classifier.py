@@ -1164,15 +1164,15 @@ async def process_excel_data(
                             rating_col = col
                             break
                     
-                    if rating_col:
-                        try:
-                            df[rating_col] = pd.to_numeric(df[rating_col], errors='coerce')
-                            high_rating_mask = df[rating_col] >= 5
-                            five_star_count = high_rating_mask.sum()
-                            logger.info(f"Skipping {five_star_count} high-rated reviews (5-star)")
-                            df = df[~high_rating_mask]
-                        except Exception as e:
-                            logger.warning(f"Could not filter out 5-star reviews, processing all: {str(e)}")
+                    # if rating_col:
+                    #     try:
+                    #         df[rating_col] = pd.to_numeric(df[rating_col], errors='coerce')
+                    #         high_rating_mask = df[rating_col] >= 5
+                    #         five_star_count = high_rating_mask.sum()
+                    #         logger.info(f"Skipping {five_star_count} high-rated reviews (5-star)")
+                    #         df = df[~high_rating_mask]
+                    #     except Exception as e:
+                    #         logger.warning(f"Could not filter out 5-star reviews, processing all: {str(e)}")
                     
                     # Extract feedback using the standardized dataframe
                     for idx, row in df.iterrows():
@@ -2748,15 +2748,15 @@ async def process_csv_data(
                     break
             
             # Skip 5-star reviews if rating column exists
-            if rating_col:
-                try:
-                    df[rating_col] = pd.to_numeric(df[rating_col], errors='coerce')
-                    high_rating_mask = df[rating_col] >= 5
-                    five_star_count = high_rating_mask.sum()
-                    logger.info(f"Skipping {five_star_count} high-rated reviews (5-star)")
-                    df = df[~high_rating_mask]
-                except Exception as e:
-                    logger.warning(f"Could not filter out 5-star reviews, processing all: {str(e)}")
+            # if rating_col:
+            #     try:
+            #         df[rating_col] = pd.to_numeric(df[rating_col], errors='coerce')
+            #         high_rating_mask = df[rating_col] >= 5
+            #         five_star_count = high_rating_mask.sum()
+            #         logger.info(f"Skipping {five_star_count} high-rated reviews (5-star)")
+            #         df = df[~high_rating_mask]
+            #     except Exception as e:
+            #         logger.warning(f"Could not filter out 5-star reviews, processing all: {str(e)}")
         
         # Extract feedback with ratings - vectorized approach from standardized dataframe
         valid_rows = df[df[feedback_col].notna() & (df[feedback_col].astype(str).str.strip() != "")]
