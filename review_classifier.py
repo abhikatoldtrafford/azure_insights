@@ -877,6 +877,15 @@ def standardize_dataframe(df: pd.DataFrame, columns: Dict[str, str], source: str
                             break
             
             if not feedback_found:
+                # Use any text column as feedback
+                for col in result_df.columns:
+                    if result_df[col].dtype == 'object' and col not in desired_columns:
+                        result_df = result_df.rename(columns={col: "Customer Feedback"})
+                        feedback_found = True
+                        logger.info(f"Using column '{col}' as Customer Feedback (fallback)")
+                        break
+            
+            if not feedback_found:
                 # Use the first column as feedback as last resort
                 if len(result_df.columns) > 0:
                     first_col = result_df.columns[0]
@@ -2036,7 +2045,7 @@ async def identify_relevant_columns(client: AzureOpenAI, df: pd.DataFrame) -> Di
                             non_null_values = df[col].dropna().astype(str)
                             if len(non_null_values) > 0:
                                 avg_length = non_null_values.str.len().mean()
-                                if avg_length >= 20:  # Minimum threshold for feedback
+                                if avg_length >= 10:  # Lower threshold to catch shorter reviews
                                     potential_columns.append((col, avg_length))
                                     break
                 
@@ -2054,11 +2063,11 @@ async def identify_relevant_columns(client: AzureOpenAI, df: pd.DataFrame) -> Di
                 for col in df.columns:
                     if df[col].dtype == 'object':
                         non_null_values = df[col].dropna().astype(str)
-                        if len(non_null_values) > len(df) * 0.3:  # At least 30% non-null
+                        if len(non_null_values) > len(df) * 0.1:  # Lowered from 0.3 to 0.1 (10% non-null)
                             avg_length = non_null_values.str.len().mean()
                             
                             # Skip if average length is too short (likely names or IDs)
-                            if avg_length < 20:
+                            if avg_length < 10:  # Lowered from 20 to accommodate shorter reviews
                                 continue
                                 
                             # Skip if all values are very similar length (likely IDs)
@@ -2257,7 +2266,7 @@ async def identify_relevant_columns(client: AzureOpenAI, df: pd.DataFrame) -> Di
                 sample_values = df[columns["feedback_col"]].dropna().astype(str).head(3).tolist()
                 avg_length = df[columns["feedback_col"]].dropna().astype(str).str.len().mean()
                 
-                if avg_length < 10:
+                if avg_length < 5:  # Lowered from 10 to be more permissive
                     logger.warning(f"Feedback column has very short content (avg: {avg_length:.1f}), looking for better option")
                     # Try to find a better column
                     better_found = False
