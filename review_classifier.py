@@ -1680,7 +1680,11 @@ async def identify_key_areas(client: AzureOpenAI, data_sample: str, max_areas: i
                 area["problem"] = "Unspecified problem"
             if "area_type" not in area:
                 # Try to infer area_type from the problem description
-                area["area_type"] = infer_area_type("", area.get("problem", ""))
+                problem_lower = area.get("problem", "").lower()
+                if any(word in problem_lower for word in ["want", "need", "request", "add", "feature", "enhance", "improve"]):
+                    area["area_type"] = "feature"
+                else:
+                    area["area_type"] = "issue"
         
         # Ensure we have a balanced mix
         feature_count = sum(1 for area in key_areas if area.get("area_type") == "feature")
@@ -3194,8 +3198,7 @@ async def format_analysis_results(analysis_results: Dict[str, Any], return_raw_f
             
             result["raw_feedbacks"] = filtered_feedbacks
             
-        formatted_results = [result for result in formatted_results if result["number_of_users"] > 0]
-        logger.info(f"Removed {len(key_areas) - len(formatted_results)} key areas with no feedback")
+        formatted_results.append(result)
     
     # Sort by number of users (descending)
     formatted_results.sort(key=lambda x: x["number_of_users"], reverse=True)
@@ -3634,7 +3637,7 @@ async def classify_single_review(
                     raise ValueError("Missing required fields in response")
                 
                 # Validate area_type
-                if result["area_type"] not in ["feature", "issue", "NA"]:
+                if result["area_type"] not in ["feature", "issue"]:
                     # Try to infer from the review and problem
                     result["area_type"] = infer_area_type(review_text, result.get("customer_problem", ""))
                 
@@ -3692,105 +3695,40 @@ async def classify_single_review(
 
 def infer_area_type(review_text: str, customer_problem: str) -> str:
     """
-    Infers whether a review is a feature request, issue, or neither (NA) using GPT with fallback.
+    Infers whether a review is a feature request or an issue based on text analysis.
     
     Args:
         review_text: The review text
         customer_problem: The identified customer problem
         
     Returns:
-        "feature", "issue", or "NA"
+        "feature" or "issue"
     """
-    try:
-        # Skip GPT for obvious cases
-        combined_text = f"{review_text} {customer_problem}".lower()
-        if "no problems" in combined_text or "no issues" in combined_text or "positive feedback" in combined_text:
-            return "NA"
-        
-        # Try GPT classification
-        try:
-            prompt = f"""
-            Analyze this customer review and problem statement to determine if it's a feature request, an issue/problem, or neither.
-            
-            Review: "{review_text}"
-            Problem Statement: "{customer_problem}"
-            
-            Classification rules:
-            - "feature": The review requests new functionality, enhancements, improvements, or expresses wishes for additional capabilities
-            - "issue": The review reports problems, bugs, errors, complaints, or things that are broken/not working
-            - "NA": The review is purely positive feedback, praise, or satisfaction with no problems or feature requests
-            
-            Examples:
-            - "I wish the app had dark mode" → feature
-            - "The app crashes when I upload photos" → issue
-            - "Everything works great, very satisfied" → NA
-            - "Would be better with more export options" → feature
-            - "Customer service never responds" → issue
-            - "Love the product, no complaints" → NA
-            
-            Respond with ONLY one word: "feature", "issue", or "NA"
-            """
-            
-            response = AZURE_CLIENT.chat.completions.create(
-                model="gpt-4.1-mini",
-                messages=[
-                    {"role": "system", "content": "You are a review classifier. Respond with only one word: feature, issue, or NA"},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.1,
-                max_tokens=10
-            )
-            
-            result = response.choices[0].message.content.strip().lower()
-            
-            # Validate response
-            if result in ["feature", "issue", "na"]:
-                return result
-            else:
-                logger.warning(f"GPT returned invalid area_type: {result}, using fallback")
-                
-        except Exception as e:
-            logger.warning(f"GPT classification failed: {str(e)}, using fallback")
-        
-        # Fallback: Enhanced keyword-based classification
-        feature_keywords = [
-            "want", "need", "request", "add", "feature", "enhance", "improve",
-            "would like", "wish", "suggest", "should have", "could have",
-            "implement", "missing", "lacks", "needs", "requires", "please add",
-            "it would be great", "consider adding", "functionality", "hope",
-            "looking forward", "would be nice", "recommendation for"
-        ]
-        
-        issue_keywords = [
-            "broken", "bug", "crash", "error", "fail", "doesn't work", "not working",
-            "issue", "problem", "glitch", "freeze", "slow", "hang", "stuck",
-            "unable", "cannot", "malfunction", "defect", "fault", "wrong",
-            "disappointed", "frustrat", "poor", "terrible", "awful", "bad",
-            "unresponsive", "delay", "incompetent", "waste"
-        ]
-        
-        positive_keywords = [
-            "great", "excellent", "love", "perfect", "amazing", "wonderful",
-            "satisfied", "happy", "recommend", "best", "fantastic", "impressive",
-            "no problems", "no issues", "works well", "good experience", "praise"
-        ]
-        
-        # Count keyword matches
-        feature_count = sum(1 for keyword in feature_keywords if keyword in combined_text)
-        issue_count = sum(1 for keyword in issue_keywords if keyword in combined_text)
-        positive_count = sum(1 for keyword in positive_keywords if keyword in combined_text)
-        
-        # Decision logic
-        if positive_count > issue_count and positive_count > feature_count:
-            return "NA"
-        elif feature_count > issue_count:
-            return "feature"
-        else:
-            return "issue"
-            
-    except Exception as e:
-        logger.error(f"Error in infer_area_type: {str(e)}")
-        return "issue"  # Default to issue if all else fails
+    feature_keywords = [
+        "want", "need", "request", "add", "feature", "enhance", "improve",
+        "would like", "wish", "suggest", "should have", "could have",
+        "implement", "missing", "lacks", "needs", "requires", "please add",
+        "it would be great", "consider adding", "functionality"
+    ]
+    
+    issue_keywords = [
+        "broken", "bug", "crash", "error", "fail", "doesn't work", "not working",
+        "issue", "problem", "glitch", "freeze", "slow", "hang", "stuck",
+        "unable", "cannot", "malfunction", "defect", "fault", "wrong"
+    ]
+    
+    combined_text = f"{review_text} {customer_problem}".lower()
+    
+    # Count keyword matches
+    feature_count = sum(1 for keyword in feature_keywords if keyword in combined_text)
+    issue_count = sum(1 for keyword in issue_keywords if keyword in combined_text)
+    
+    # Default to issue if unclear
+    if feature_count > issue_count:
+        return "feature"
+    else:
+        return "issue"
+
 
 def extract_classification_from_text(text: str, existing_categories: List[Dict[str, str]], original_json: str = "[]") -> Dict[str, str]:
     """
@@ -3884,7 +3822,7 @@ def extract_classification_from_text(text: str, existing_categories: List[Dict[s
                         pass
                 
                 # Infer area_type if not valid
-                if result["area_type"] not in ["feature", "issue", "NA"]:
+                if result["area_type"] not in ["feature", "issue"]:
                     result["area_type"] = infer_area_type("", result["customer_problem"])
                 
                 return result
@@ -3914,7 +3852,7 @@ def extract_classification_from_text(text: str, existing_categories: List[Dict[s
                         pass
                 
                 # Infer area_type if not valid
-                if result["area_type"] not in ["feature", "issue", "NA"]:
+                if result["area_type"] not in ["feature", "issue"]:
                     result["area_type"] = infer_area_type("", result["customer_problem"])
                 
                 return result
@@ -4042,7 +3980,7 @@ def extract_classification_from_text(text: str, existing_categories: List[Dict[s
                     }
                     
                     # Infer area_type if not valid
-                    if result["area_type"] not in ["feature", "issue", "NA"]:
+                    if result["area_type"] not in ["feature", "issue"]:
                         result["area_type"] = infer_area_type("", result["customer_problem"])
                     
                     return result
