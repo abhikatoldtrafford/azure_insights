@@ -3199,7 +3199,13 @@ async def format_analysis_results(analysis_results: Dict[str, Any], return_raw_f
             result["raw_feedbacks"] = filtered_feedbacks
             
         formatted_results.append(result)
-    
+    # Remove key areas with no feedback
+    original_count = len(formatted_results)
+    formatted_results = [result for result in formatted_results if result["number_of_users"] > 0]
+    removed_count = original_count - len(formatted_results)
+    if removed_count > 0:
+        logger.info(f"Removed {removed_count} key areas with no feedback")
+
     # Sort by number of users (descending)
     formatted_results.sort(key=lambda x: x["number_of_users"], reverse=True)
     
@@ -3207,7 +3213,7 @@ async def format_analysis_results(analysis_results: Dict[str, Any], return_raw_f
         "analysis_results": formatted_results,
         "summary": {
             "total_feedback_items": sum(len(feedbacks) for feedbacks in classified_feedback.values()),
-            "total_key_areas": len(key_areas)
+            "total_key_areas": len(formatted_results)
         },
         "insight_summary": insight_summary  # Add the insight summary to the return value
     }
