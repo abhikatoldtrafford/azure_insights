@@ -746,6 +746,7 @@ async def classify_feedback_by_type(
 def standardize_dataframe(df: pd.DataFrame, columns: Dict[str, str], source: str = None) -> pd.DataFrame:
     """
     Standardizes a dataframe to have consistent column names and structure.
+    Handles cases where column detection failed or columns don't exist.
     
     Args:
         df: Original DataFrame
@@ -757,16 +758,33 @@ def standardize_dataframe(df: pd.DataFrame, columns: Dict[str, str], source: str
     """
     try:
         logger.info("Standardizing DataFrame to consistent column structure")
+        
+        # Handle case where df has no columns
+        if len(df.columns) == 0:
+            logger.warning("DataFrame has no columns, creating empty standardized DataFrame")
+            return pd.DataFrame({
+                "Received": ["N/A"],
+                "Name": ["N/A"],
+                "Customer Feedback": ["No data available"],
+                "Source": [source if source else "N/A"]
+            })
+        
         # Create a copy to avoid modifying the original
         result_df = df.copy()
         
         # Clean column names - remove trailing/leading whitespace
-        result_df.columns = [col.strip() if isinstance(col, str) else col for col in result_df.columns]
+        result_df.columns = [col.strip() if isinstance(col, str) else str(col) for col in result_df.columns]
         
         # Update column references in the columns dict if they had trailing spaces
         for col_type in columns:
             if columns[col_type] and isinstance(columns[col_type], str):
                 columns[col_type] = columns[col_type].strip()
+        
+        # Validate that referenced columns actually exist
+        for col_type, col_name in list(columns.items()):
+            if col_name and col_name not in result_df.columns:
+                logger.warning(f"Column '{col_name}' referenced for {col_type} but not found in DataFrame")
+                columns[col_type] = None
         
         # Handle specific column name mappings for common patterns
         specific_mappings = {
@@ -775,22 +793,41 @@ def standardize_dataframe(df: pd.DataFrame, columns: Dict[str, str], source: str
             "Customer Name": "Name",
             "User": "Name",
             "Username": "Name",
+            "Author": "Name",
+            "Submitted By": "Name",
+            "Customer": "Name",
+            "Reviewed By": "Name",
             
             "Review": "Customer Feedback",
+            "Reviews": "Customer Feedback",
             "Comment": "Customer Feedback",
-            "Feedback": "Customer Feedback",
             "Comments": "Customer Feedback",
+            "Feedback": "Customer Feedback",
+            "Review Text": "Customer Feedback",
+            "Customer Review": "Customer Feedback",
+            "User Feedback": "Customer Feedback",
+            "Message": "Customer Feedback",
+            "Description": "Customer Feedback",
+            "review_text": "Customer Feedback",
             
             "Date": "Received",
             "Timestamp": "Received",
             "Time": "Received",
             "Created At": "Received",
             "Submitted": "Received",
+            "Review Date": "Received",
+            "Posted": "Received",
+            "Date Posted": "Received",
+            "date": "Received",
             
             "Platform": "Source",
             "Channel": "Source",
             "Website": "Source",
-            "Origin": "Source"
+            "Origin": "Source",
+            "Review Source": "Source",
+            "From": "Source",
+            "Via": "Source",
+            "source": "Source"
         }
         
         # Apply specific mappings first
@@ -804,21 +841,52 @@ def standardize_dataframe(df: pd.DataFrame, columns: Dict[str, str], source: str
         
         # Create a mapping from original column names to standard names
         column_mapping = {}
-        if columns["feedback_col"]:
+        
+        # Only map columns that were actually identified and exist
+        if columns.get("feedback_col") and columns["feedback_col"] in result_df.columns:
             column_mapping[columns["feedback_col"]] = "Customer Feedback"
-        if columns["received_col"]:
+        if columns.get("received_col") and columns["received_col"] in result_df.columns:
             column_mapping[columns["received_col"]] = "Received"
-        if columns["name_col"]:
+        if columns.get("name_col") and columns["name_col"] in result_df.columns:
             column_mapping[columns["name_col"]] = "Name"
-        if columns["source_col"]:
+        if columns.get("source_col") and columns["source_col"] in result_df.columns:
             column_mapping[columns["source_col"]] = "Source"
             
         # Rename the columns that were identified
-        result_df = result_df.rename(columns=column_mapping)
+        if column_mapping:
+            result_df = result_df.rename(columns=column_mapping)
         
         # Get current columns and desired columns
         current_columns = set(result_df.columns)
         desired_columns = {"Received", "Name", "Customer Feedback", "Source"}
+        
+        # Ensure we have a Customer Feedback column
+        if "Customer Feedback" not in current_columns:
+            # Try to find any text column to use as feedback
+            feedback_found = False
+            for col in result_df.columns:
+                if result_df[col].dtype == 'object' and col not in desired_columns:
+                    # Check if it has meaningful content
+                    non_null = result_df[col].dropna()
+                    if len(non_null) > 0:
+                        avg_length = non_null.astype(str).str.len().mean()
+                        if avg_length > 10:  # Likely contains feedback
+                            result_df = result_df.rename(columns={col: "Customer Feedback"})
+                            feedback_found = True
+                            logger.info(f"Using column '{col}' as Customer Feedback")
+                            break
+            
+            if not feedback_found:
+                # Use the first column as feedback as last resort
+                if len(result_df.columns) > 0:
+                    first_col = result_df.columns[0]
+                    result_df = result_df.rename(columns={first_col: "Customer Feedback"})
+                    logger.warning(f"Using first column '{first_col}' as Customer Feedback")
+                else:
+                    result_df["Customer Feedback"] = "No feedback data"
+        
+        # Update current columns after potential renaming
+        current_columns = set(result_df.columns)
         
         # Add any missing desired columns with N/A values
         for col in desired_columns:
@@ -831,32 +899,75 @@ def standardize_dataframe(df: pd.DataFrame, columns: Dict[str, str], source: str
             logger.info(f"Overriding Source column with value: {source}")
             result_df["Source"] = source
                 
-        # Keep only the desired columns plus any that should be preserved
+        # Keep only the desired columns plus any rating column that exists
         columns_to_keep = list(desired_columns)
         
         # Add the rating column if it exists and is different from other columns
-        if columns["rating_col"] and columns["rating_col"] not in column_mapping and columns["rating_col"] in result_df.columns:
-            # Check if we should keep the rating column
-            rating_col = columns["rating_col"]
-            if rating_col in result_df.columns:
-                columns_to_keep.append(rating_col)
+        if columns.get("rating_col"):
+            # Check if the rating column still exists after renaming
+            if columns["rating_col"] in result_df.columns:
+                columns_to_keep.append(columns["rating_col"])
+            else:
+                # Check if it was renamed to a standard name
+                for old_name, new_name in column_mapping.items():
+                    if old_name == columns["rating_col"] and new_name in result_df.columns:
+                        # It was already renamed to a standard column
+                        break
+                else:
+                    # Look for any remaining numeric column that could be rating
+                    for col in result_df.columns:
+                        if col not in desired_columns and pd.api.types.is_numeric_dtype(result_df[col]):
+                            columns_to_keep.append(col)
+                            logger.info(f"Including numeric column '{col}' as potential rating")
+                            break
         
-        # Keep only the desired columns
-        result_df = result_df[columns_to_keep]
+        # Filter to keep only desired columns
+        available_columns = [col for col in columns_to_keep if col in result_df.columns]
+        result_df = result_df[available_columns]
+        
+        # Ensure we have at least one row
+        if len(result_df) == 0:
+            logger.warning("DataFrame is empty after standardization, adding placeholder row")
+            result_df = pd.DataFrame({
+                "Received": ["N/A"],
+                "Name": ["N/A"],
+                "Customer Feedback": ["No feedback data available"],
+                "Source": [source if source else "N/A"]
+            })
+        
+        # Validate the Customer Feedback column has actual content
+        if "Customer Feedback" in result_df.columns:
+            # Replace empty strings and whitespace with NaN
+            result_df["Customer Feedback"] = result_df["Customer Feedback"].replace(r'^\s*$', np.nan, regex=True)
+            # If all feedback is empty, add a placeholder
+            if result_df["Customer Feedback"].isna().all():
+                logger.warning("All Customer Feedback values are empty")
+                result_df["Customer Feedback"] = result_df["Customer Feedback"].fillna("No feedback content")
         
         logger.info(f"Standardized DataFrame structure: {list(result_df.columns)}")
+        logger.info(f"Standardized DataFrame shape: {result_df.shape}")
+        
         return result_df
         
     except Exception as e:
         logger.error(f"Error standardizing DataFrame: {str(e)}")
         # Return a basic dataframe with the required columns if anything goes wrong
-        fallback_df = pd.DataFrame(columns=["Received", "Name", "Customer Feedback", "Source"])
-        if len(df) > 0:
-            fallback_df["Customer Feedback"] = df.iloc[:, 0] if len(df.columns) > 0 else "N/A"
-            fallback_df["Received"] = "N/A"
-            fallback_df["Name"] = "N/A"
-            fallback_df["Source"] = source if source else "N/A"
-        return fallback_df
+        try:
+            fallback_df = pd.DataFrame({
+                "Received": ["N/A"] * len(df) if len(df) > 0 else ["N/A"],
+                "Name": ["N/A"] * len(df) if len(df) > 0 else ["N/A"],
+                "Customer Feedback": df.iloc[:, 0].astype(str) if len(df.columns) > 0 and len(df) > 0 else ["Error processing data"],
+                "Source": [source if source else "N/A"] * (len(df) if len(df) > 0 else 1)
+            })
+            return fallback_df
+        except:
+            # Ultimate fallback
+            return pd.DataFrame({
+                "Received": ["N/A"],
+                "Name": ["N/A"],
+                "Customer Feedback": ["Error processing data"],
+                "Source": [source if source else "N/A"]
+            })
 async def get_sentiment_anchor_embeddings(client: AzureOpenAI) -> Tuple[List[float], List[float]]:
     """
     Generates and caches embeddings for positive and negative sentiment anchors.
@@ -1738,7 +1849,7 @@ async def cosine_similarity(vec1: List[float], vec2: List[float]) -> float:
 async def identify_relevant_columns(client: AzureOpenAI, df: pd.DataFrame) -> Dict[str, str]:
     """
     Uses OpenAI to identify which columns contain ratings, feedback text, received date, name, and source.
-    Now also recognizes column names from the extract-reviews API.
+    Now with extensive fallback logic and validation to ensure proper column identification.
     
     Args:
         client: Azure OpenAI client
@@ -1751,92 +1862,7 @@ async def identify_relevant_columns(client: AzureOpenAI, df: pd.DataFrame) -> Di
         logger.info(f"Beginning column detection on DataFrame with shape: {df.shape}")
         logger.info(f"Available columns: {list(df.columns)}")
         
-        # Get a sample of the data
-        sample = df.sample(min(5, len(df))).to_csv(index=False)
-        columns_list = list(df.columns)
-        columns_with_indices = [f"{i}: {col}" for i, col in enumerate(columns_list)]
-        columns_text = "\n".join(columns_with_indices)
-        
-        prompt = f"""
-        You are a specialized data analyst focusing on customer feedback analysis. Your task is to precisely identify the most relevant columns in this customer feedback dataset.
-
-        DATASET SAMPLE:
-        ```
-        {sample}
-        ```
-
-        AVAILABLE COLUMNS (with indices):
-        ```
-        {columns_text}
-        ```
-
-        TASK:
-        Carefully examine the dataset and identify these types of columns:
-
-        1. CUSTOMER FEEDBACK COLUMN:
-           - Contains textual customer opinions, comments, reviews, or feedback
-           - Common names: "review_text", "Customer Feedback", "feedback", "comment", "review", "text", "description", "comments"
-           - Usually includes sentences, paragraphs, or detailed comments
-           - May contain terms like "liked", "disliked", "issue with", "problem", etc.
-           - Look for the column with the most detailed textual content
-        
-        2. RATING COLUMN:
-           - Contains numerical scores (1-5, 1-10) or textual ratings ("Excellent", "Poor")
-           - Common names: "star_rating", "rating", "score", "stars", "satisfaction", "Rating"
-           - May be presented as numbers or categorical values
-
-        3. RECEIVED COLUMN:
-           - Contains date or timestamp information when the feedback was received
-           - Common names: "date", "received", "submitted", "timestamp", "Received", "created_at"
-           - May be formatted as date, datetime, or timestamp
-
-        4. NAME COLUMN:
-           - Contains the name of the reviewer or customer
-           - Common names: "user", "Name", "customer", "reviewer", "username", "customer_name"
-           - Usually contains full names, first names, or usernames
-
-        5. SOURCE COLUMN:
-           - Contains information about where the feedback came from
-           - Common names: "source", "platform", "channel", "website", "Source", "origin"
-           - May contain values like "Google", "Amazon", "Website", "App", etc.
-
-        For each column you identify, consider:
-        - Column content and data type
-        - Column name relevance (including API column names like "user", "review_text", "star_rating")
-        - Amount of information in the column
-        - Uniqueness of values
-
-        IMPORTANT INSTRUCTIONS:
-        - You MUST select from the provided column indices (0 to {len(columns_list)-1})
-        - You must specify both the index and exact column name
-        - If a certain type of column doesn't exist, set the value to null
-        - Be aware of both traditional column names AND API column names (user, review_text, date, source, star_rating)
-
-        RESPONSE FORMAT:
-        You must respond with column indices and names in this exact JSON format:
-        {{
-            "feedback_col": "3: [Exact Column Name]",
-            "rating_col": "1: [Exact Column Name]",
-            "received_col": "0: [Exact Column Name]",
-            "name_col": "2: [Exact Column Name]",
-            "source_col": "4: [Exact Column Name]"
-        }}
-        """
-        
-        response = client.chat.completions.create(
-            model="gpt-4.1-mini",
-            messages=[
-                {"role": "system", "content": "You are a data analysis assistant that identifies column types in customer feedback datasets. You recognize both traditional column names and API-generated column names."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.1,
-            response_format={"type": "json_object"}
-        )
-        
-        result_text = response.choices[0].message.content
-        result = json.loads(result_text)
-        
-        # Extract column information and handle fuzzy matching if needed
+        # Initialize result
         columns = {
             "feedback_col": None, 
             "rating_col": None,
@@ -1845,142 +1871,464 @@ async def identify_relevant_columns(client: AzureOpenAI, df: pd.DataFrame) -> Di
             "source_col": None
         }
         
-        for col_type in columns.keys():
-            if result.get(col_type):
-                # Parse the response format "index: Column Name"
-                try:
-                    col_parts = result[col_type].split(":", 1)
-                    if len(col_parts) == 2:
-                        idx = int(col_parts[0].strip())
-                        col_name = col_parts[1].strip()
-                        
-                        # Verify the column exists
-                        if 0 <= idx < len(columns_list) and columns_list[idx] == col_name:
-                            columns[col_type] = col_name
-                        else:
-                            # Try fuzzy matching
-                            best_match, score = process.extractOne(col_name, columns_list)
-                            if score > 80:  # Good match threshold
-                                columns[col_type] = best_match
+        # Clean column names first
+        df_columns = [col.strip() if isinstance(col, str) else str(col) for col in df.columns]
+        
+        # Get a sample of the data
+        sample_size = min(5, len(df))
+        if sample_size == 0:
+            logger.error("Empty DataFrame provided")
+            return columns
+            
+        sample = df.sample(sample_size).to_csv(index=False)
+        columns_list = list(df.columns)
+        columns_with_indices = [f"{i}: {col}" for i, col in enumerate(columns_list)]
+        columns_text = "\n".join(columns_with_indices)
+        
+        # Try OpenAI first
+        try:
+            prompt = f"""
+            You are a specialized data analyst focusing on customer feedback analysis. Your task is to precisely identify the most relevant columns in this customer feedback dataset.
+
+            DATASET SAMPLE:
+            ```
+            {sample}
+            ```
+
+            AVAILABLE COLUMNS (with indices):
+            ```
+            {columns_text}
+            ```
+
+            TASK:
+            Carefully examine the dataset and identify these types of columns:
+
+            1. CUSTOMER FEEDBACK COLUMN:
+               - Contains textual customer opinions, comments, reviews, or feedback
+               - Common names: "Review", "review_text", "Customer Feedback", "feedback", "comment", "text", "description", "comments", "Reviews"
+               - Usually the column with the LONGEST text content
+               - Usually includes sentences, paragraphs, or detailed comments
+               - May contain terms like "liked", "disliked", "issue with", "problem", etc.
+               - IMPORTANT: If you see a column named "Review" or "Reviews", it's almost certainly the feedback column
+            
+            2. RATING COLUMN:
+               - Contains numerical scores (1-5, 1-10) or textual ratings ("Excellent", "Poor")
+               - Common names: "Rating", "star_rating", "rating", "score", "stars", "satisfaction"
+               - May be presented as numbers or categorical values
+               - IMPORTANT: If you see a column named "Rating" with numeric values, it's almost certainly the rating column
+
+            3. RECEIVED COLUMN:
+               - Contains date or timestamp information when the feedback was received
+               - Common names: "date", "received", "submitted", "timestamp", "Received", "created_at"
+               - May be formatted as date, datetime, or timestamp
+
+            4. NAME COLUMN:
+               - Contains the name of the reviewer or customer
+               - Common names: "Name", "user", "customer", "reviewer", "username", "customer_name"
+               - Usually contains full names, first names, or usernames
+               - IMPORTANT: If you see a column named "Name" with person names, it's almost certainly the name column
+               - This should have SHORTER text than the feedback column
+
+            5. SOURCE COLUMN:
+               - Contains information about where the feedback came from
+               - Common names: "source", "platform", "channel", "website", "Source", "origin"
+               - May contain values like "Google", "Amazon", "Website", "App", etc.
+
+            CRITICAL RULES:
+            - The feedback column should have the LONGEST average text length
+            - If a column is named "Review" or "Reviews", it's very likely the feedback column
+            - If a column is named "Rating" with numbers 1-5, it's very likely the rating column
+            - If a column is named "Name" with short text entries, it's very likely the name column
+            - Do NOT confuse "Review" (feedback) with "Reviewer" (name)
+            - Do NOT select a name/ID column as the feedback column
+
+            For each column you identify, consider:
+            - Column content and data type
+            - Column name relevance (exact matches like "Review", "Rating", "Name" are highly likely)
+            - Amount of information in the column (feedback should be longest)
+            - Uniqueness of values
+
+            IMPORTANT INSTRUCTIONS:
+            - You MUST select from the provided column indices (0 to {len(columns_list)-1})
+            - You must specify both the index and exact column name
+            - If a certain type of column doesn't exist, set the value to null
+            - Pay special attention to simple column names like "Review", "Rating", "Name"
+
+            RESPONSE FORMAT:
+            You must respond with column indices and names in this exact JSON format:
+            {{
+                "feedback_col": "3: [Exact Column Name]",
+                "rating_col": "1: [Exact Column Name]",
+                "received_col": "0: [Exact Column Name]",
+                "name_col": "2: [Exact Column Name]",
+                "source_col": "4: [Exact Column Name]"
+            }}
+            """
+            
+            response = client.chat.completions.create(
+                model="gpt-4.1-mini",
+                messages=[
+                    {"role": "system", "content": "You are a data analysis assistant that identifies column types in customer feedback datasets. You recognize both traditional column names and API-generated column names."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.1,
+                response_format={"type": "json_object"}
+            )
+            
+            result_text = response.choices[0].message.content
+            result = json.loads(result_text)
+            
+            # Extract column information from OpenAI response
+            for col_type in columns.keys():
+                if result.get(col_type):
+                    # Parse the response format "index: Column Name"
+                    try:
+                        col_parts = result[col_type].split(":", 1)
+                        if len(col_parts) == 2:
+                            idx = int(col_parts[0].strip())
+                            col_name = col_parts[1].strip()
+                            
+                            # Verify the column exists
+                            if 0 <= idx < len(columns_list) and columns_list[idx] == col_name:
+                                columns[col_type] = col_name
                             else:
-                                logger.warning(f"Column '{col_name}' not found and no good match")
-                except (ValueError, IndexError) as e:
-                    logger.warning(f"Error parsing column specification '{result[col_type]}': {e}")
+                                # Try fuzzy matching
+                                best_match, score = process.extractOne(col_name, columns_list)
+                                if score > 80:  # Good match threshold
+                                    columns[col_type] = best_match
+                                else:
+                                    logger.warning(f"Column '{col_name}' not found and no good match")
+                    except (ValueError, IndexError) as e:
+                        logger.warning(f"Error parsing column specification '{result[col_type]}': {e}")
+                        
+        except Exception as e:
+            logger.error(f"OpenAI column identification failed: {str(e)}")
         
-        # Apply fallback strategies for each column type
-        # Feedback column fallback - now includes API column names
-        if not columns["feedback_col"]:
-            # Try to find a text column with keywords (including API names)
-            keywords = ["review_text", "comment", "feedback", "review", "text", "description", "comments", "Customer Feedback"]
-            for col in df.columns:
-                col_lower = col.lower()
-                if any(keyword.lower() in col_lower for keyword in keywords):
-                    columns["feedback_col"] = col
-                    break
+        # Apply comprehensive fallback strategies
+        
+        # Feedback column fallback - most critical
+        if not columns["feedback_col"] or columns["feedback_col"] not in df.columns:
+            logger.info("Applying fallback logic for feedback column")
             
-            # If still not found, use first string column with sufficient data
-            if not columns["feedback_col"]:
-                logger.warning("No feedback column identified via AI or keyword matching - using heuristics")
-                for col in df.columns:
-                    if df[col].dtype == 'object' and df[col].notna().sum() > len(df) * 0.5:
-                        logger.info(f"Selected '{col}' as feedback column based on data type and non-null values")
+            # Extended keywords list with priority order
+            exact_keywords = ["review", "reviews", "customer feedback", "feedback", "comment", "comments", "review_text", "review text"]
+            partial_keywords = ["review", "feedback", "comment", "text", "description", "message", "opinion", "testimonial", "remarks"]
+            
+            # First try exact match (case-insensitive)
+            for col in df.columns:
+                col_lower = str(col).lower().strip()
+                for keyword in exact_keywords:
+                    if col_lower == keyword:
+                        logger.info(f"Selected '{col}' as feedback column based on exact keyword match")
                         columns["feedback_col"] = col
-                        # Log sample values for verification
-                        sample_values = df[col].dropna().sample(min(3, df[col].notna().sum())).tolist()
-                        logger.info(f"Sample feedback values: {sample_values}")
                         break
+                if columns["feedback_col"]:
+                    break
+            
+            # If no exact match, try partial match with length validation
+            if not columns["feedback_col"]:
+                potential_columns = []
+                for col in df.columns:
+                    col_lower = str(col).lower()
+                    for keyword in partial_keywords:
+                        if keyword in col_lower and df[col].dtype == 'object':
+                            # Calculate average text length
+                            non_null_values = df[col].dropna().astype(str)
+                            if len(non_null_values) > 0:
+                                avg_length = non_null_values.str.len().mean()
+                                if avg_length >= 20:  # Minimum threshold for feedback
+                                    potential_columns.append((col, avg_length))
+                                    break
+                
+                # Sort by average length and select the longest
+                if potential_columns:
+                    potential_columns.sort(key=lambda x: x[1], reverse=True)
+                    columns["feedback_col"] = potential_columns[0][0]
+                    logger.info(f"Selected '{columns['feedback_col']}' as feedback column based on keyword match and text length ({potential_columns[0][1]:.1f})")
+            
+            # If still not found, use column with longest average text length
+            if not columns["feedback_col"]:
+                logger.warning("No feedback column identified via keywords - using text length heuristics")
+                
+                text_columns = []
+                for col in df.columns:
+                    if df[col].dtype == 'object':
+                        non_null_values = df[col].dropna().astype(str)
+                        if len(non_null_values) > len(df) * 0.3:  # At least 30% non-null
+                            avg_length = non_null_values.str.len().mean()
+                            
+                            # Skip if average length is too short (likely names or IDs)
+                            if avg_length < 20:
+                                continue
+                                
+                            # Skip if all values are very similar length (likely IDs)
+                            length_std = non_null_values.str.len().std()
+                            if length_std < 5 and avg_length < 50:
+                                continue
+                            
+                            # Check for diversity in text (not all same values)
+                            unique_ratio = non_null_values.nunique() / len(non_null_values)
+                            if unique_ratio < 0.1:  # Less than 10% unique values
+                                continue
+                            
+                            text_columns.append((col, avg_length))
+                
+                # Select column with longest average text
+                if text_columns:
+                    text_columns.sort(key=lambda x: x[1], reverse=True)
+                    columns["feedback_col"] = text_columns[0][0]
+                    logger.info(f"Selected '{columns['feedback_col']}' as feedback column based on longest text content (avg: {text_columns[0][1]:.1f})")
+                else:
+                    # Absolute last resort - use first non-numeric column
+                    for col in df.columns:
+                        if df[col].dtype == 'object':
+                            columns["feedback_col"] = col
+                            logger.warning(f"Using '{col}' as feedback column as last resort")
+                            break
         
-        # Rating column fallback - now includes API column names
-        if not columns["rating_col"]:
-            # Try to find a numeric column with keywords (including API names)
-            keywords = ["star_rating", "rating", "score", "stars", "grade", "rank", "Rating"]
-            for col in df.columns:
-                col_lower = col.lower()
-                if any(keyword.lower() in col_lower for keyword in keywords):
-                    logger.info(f"Selected '{col}' as rating column based on keyword match")
-                    columns["rating_col"] = col
-                    break
+        # Rating column fallback
+        if not columns["rating_col"] or columns["rating_col"] not in df.columns:
+            logger.info("Applying fallback logic for rating column")
             
-            # If still not found, use first numeric column
-            if not columns["rating_col"]:
-                logger.warning("No rating column identified via keywords - looking for numeric columns")
-                for col in df.columns:
-                    if pd.api.types.is_numeric_dtype(df[col]):
-                        sample_values = df[col].dropna().sample(min(5, df[col].notna().sum())).tolist()
-                        # Check if values look like ratings (typically 1-5, 1-10)
-                        if all(isinstance(val, (int, float)) for val in sample_values) and all(0 <= val <= 10 for val in sample_values):
-                            logger.info(f"Selected '{col}' as rating column based on numeric values in typical rating range")
-                            columns["rating_col"] = col
-                            break
-                            
-        # Received column fallback - now includes API column names
-        if not columns["received_col"]:
-            # Try to find date/time columns (including API names)
-            keywords = ["date", "time", "received", "created", "timestamp", "submitted", "Received"]
+            # Extended keywords with priority order
+            exact_keywords = ["rating", "star_rating", "stars", "score", "star rating"]
+            partial_keywords = ["rating", "score", "stars", "grade", "rank", "satisfaction", "rate"]
             
-            # First check column names
+            # First try exact match (case-insensitive)
             for col in df.columns:
-                col_lower = col.lower()
-                if any(keyword in col_lower for keyword in keywords):
-                    logger.info(f"Selected '{col}' as received column based on keyword match")
-                    columns["received_col"] = col
-                    break
-            
-            # If still not found, check for datetime-like columns
-            if not columns["received_col"]:
-                for col in df.columns:
-                    # Check if column has date-like values
-                    if df[col].dtype == 'datetime64[ns]':
-                        logger.info(f"Selected '{col}' as received column based on datetime type")
-                        columns["received_col"] = col
-                        break
-                    elif df[col].dtype == 'object':
-                        # Check if strings might be dates
-                        sample = df[col].dropna().sample(min(5, df[col].notna().sum())).tolist()
-                        date_patterns = [
-                            r'\d{1,4}[-/]\d{1,2}[-/]\d{1,4}',  # yyyy-mm-dd, mm/dd/yyyy
-                            r'\d{1,2}[-/]\d{1,2}[-/]\d{2,4}',  # dd/mm/yyyy, mm-dd-yy
-                            r'\w+\s+\d{1,2},?\s+\d{2,4}'      # Month Day, Year
-                        ]
-                        if any(sample) and any(re.search(pattern, str(s)) for s in sample for pattern in date_patterns):
-                            logger.info(f"Selected '{col}' as received column based on date-like strings")
-                            columns["received_col"] = col
-                            break
-                            
-        # Name column fallback - now includes API column names
-        if not columns["name_col"]:
-            keywords = ["user", "name", "customer", "reviewer", "username", "client", "person", "Name"]
-            for col in df.columns:
-                col_lower = col.lower()
-                if any(keyword in col_lower for keyword in keywords):
-                    logger.info(f"Selected '{col}' as name column based on keyword match")
-                    columns["name_col"] = col
-                    break
+                if col == columns["feedback_col"]:  # Skip if already assigned
+                    continue
                     
-        # Source column fallback
-        if not columns["source_col"]:
-            keywords = ["source", "platform", "channel", "origin", "website", "site", "Source"]
+                col_lower = str(col).lower().strip()
+                for keyword in exact_keywords:
+                    if col_lower == keyword:
+                        logger.info(f"Selected '{col}' as rating column based on exact keyword match")
+                        columns["rating_col"] = col
+                        break
+                if columns["rating_col"]:
+                    break
+            
+            # Try partial match with numeric validation
+            if not columns["rating_col"]:
+                for col in df.columns:
+                    if col == columns["feedback_col"]:
+                        continue
+                        
+                    col_lower = str(col).lower()
+                    # Skip if it contains "review" (unless it's exactly "review rating")
+                    if 'review' in col_lower and 'rating' not in col_lower:
+                        continue
+                        
+                    for keyword in partial_keywords:
+                        if keyword in col_lower:
+                            # Check if it's numeric or can be converted
+                            if pd.api.types.is_numeric_dtype(df[col]):
+                                non_null_values = df[col].dropna()
+                                if len(non_null_values) > 0:
+                                    min_val = non_null_values.min()
+                                    max_val = non_null_values.max()
+                                    unique_count = non_null_values.nunique()
+                                    
+                                    # Check for typical rating patterns
+                                    if ((min_val >= 0 and max_val <= 5 and unique_count <= 6) or
+                                        (min_val >= 1 and max_val <= 10 and unique_count <= 10) or
+                                        (min_val >= 0 and max_val <= 100 and unique_count <= 20)):
+                                        columns["rating_col"] = col
+                                        logger.info(f"Selected '{col}' as rating column based on keyword and numeric range")
+                                        break
+                    if columns["rating_col"]:
+                        break
+            
+            # Look for any numeric column with rating-like values
+            if not columns["rating_col"]:
+                for col in df.columns:
+                    if col == columns["feedback_col"]:
+                        continue
+                        
+                    if pd.api.types.is_numeric_dtype(df[col]):
+                        non_null_values = df[col].dropna()
+                        if len(non_null_values) > len(df) * 0.3:  # At least 30% non-null
+                            min_val = non_null_values.min()
+                            max_val = non_null_values.max()
+                            
+                            # Check for common rating ranges
+                            if (0 <= min_val <= 1 and 4 <= max_val <= 5) or \
+                               (1 <= min_val <= 2 and 9 <= max_val <= 10):
+                                columns["rating_col"] = col
+                                logger.info(f"Selected '{col}' as rating column based on numeric range [{min_val}, {max_val}]")
+                                break
+        
+        # Name column fallback
+        if not columns["name_col"] or columns["name_col"] not in df.columns:
+            logger.info("Applying fallback logic for name column")
+            
+            exact_keywords = ["name", "customer", "reviewer", "user", "customer name", "username"]
+            partial_keywords = ["name", "customer", "reviewer", "user", "author", "by", "client", "person"]
+            
+            # First try exact match
             for col in df.columns:
-                col_lower = col.lower()
-                if any(keyword in col_lower for keyword in keywords):
-                    logger.info(f"Selected '{col}' as source column based on keyword match")
-                    columns["source_col"] = col
+                if col in [columns["feedback_col"], columns["rating_col"]]:
+                    continue
+                    
+                col_lower = str(col).lower().strip()
+                for keyword in exact_keywords:
+                    if col_lower == keyword:
+                        logger.info(f"Selected '{col}' as name column based on exact keyword match")
+                        columns["name_col"] = col
+                        break
+                if columns["name_col"]:
+                    break
+            
+            # Try partial match with length validation
+            if not columns["name_col"]:
+                for col in df.columns:
+                    if col in [columns["feedback_col"], columns["rating_col"]]:
+                        continue
+                        
+                    col_lower = str(col).lower()
+                    # Skip if it's a review column (unless it's reviewer)
+                    if 'review' in col_lower and 'reviewer' not in col_lower:
+                        continue
+                        
+                    for keyword in partial_keywords:
+                        if keyword in col_lower and df[col].dtype == 'object':
+                            # Check average length (names should be short)
+                            avg_length = df[col].dropna().astype(str).str.len().mean()
+                            if avg_length < 50:  # Names are typically short
+                                columns["name_col"] = col
+                                logger.info(f"Selected '{col}' as name column based on keyword and text length")
+                                break
+                    if columns["name_col"]:
+                        break
+        
+        # Received column fallback
+        if not columns["received_col"] or columns["received_col"] not in df.columns:
+            keywords = ["date", "time", "received", "created", "timestamp", "submitted", "posted", "when"]
+            
+            for col in df.columns:
+                if col in [columns["feedback_col"], columns["rating_col"], columns["name_col"]]:
+                    continue
+                    
+                col_lower = str(col).lower()
+                
+                # Check column name
+                for keyword in keywords:
+                    if keyword in col_lower:
+                        columns["received_col"] = col
+                        logger.info(f"Selected '{col}' as received column based on keyword match")
+                        break
+                
+                if columns["received_col"]:
+                    break
+                
+                # Check if it's a datetime column
+                if df[col].dtype == 'datetime64[ns]':
+                    columns["received_col"] = col
+                    logger.info(f"Selected '{col}' as received column based on datetime type")
                     break
         
-        logger.info(f"COLUMN DETECTION COMPLETE: feedback={columns['feedback_col']}, rating={columns['rating_col']}, received={columns['received_col']}, name={columns['name_col']}, source={columns['source_col']}")
+        # Source column fallback
+        if not columns["source_col"] or columns["source_col"] not in df.columns:
+            keywords = ["source", "platform", "channel", "origin", "website", "site", "from", "via"]
+            
+            for col in df.columns:
+                if col in [columns["feedback_col"], columns["rating_col"], columns["name_col"], columns["received_col"]]:
+                    continue
+                    
+                col_lower = str(col).lower()
+                for keyword in keywords:
+                    if keyword in col_lower:
+                        columns["source_col"] = col
+                        logger.info(f"Selected '{col}' as source column based on keyword match")
+                        break
+                if columns["source_col"]:
+                    break
+        
+        # Final validation before returning
+        logger.info("Performing final validation of column assignments")
+        
+        # Ensure feedback column exists and has meaningful content
+        if columns["feedback_col"]:
+            if columns["feedback_col"] not in df.columns:
+                logger.error(f"Feedback column '{columns['feedback_col']}' not in DataFrame columns")
+                columns["feedback_col"] = None
+            else:
+                # Validate it has actual feedback content
+                sample_values = df[columns["feedback_col"]].dropna().astype(str).head(3).tolist()
+                avg_length = df[columns["feedback_col"]].dropna().astype(str).str.len().mean()
+                
+                if avg_length < 10:
+                    logger.warning(f"Feedback column has very short content (avg: {avg_length:.1f}), looking for better option")
+                    # Try to find a better column
+                    better_found = False
+                    for col in df.columns:
+                        if df[col].dtype == 'object' and col != columns["feedback_col"]:
+                            other_avg = df[col].dropna().astype(str).str.len().mean()
+                            if other_avg > avg_length * 2:
+                                logger.info(f"Found better feedback column: '{col}' (avg length: {other_avg:.1f})")
+                                columns["feedback_col"] = col
+                                better_found = True
+                                break
+        
+        # Ensure no column is assigned to multiple types
+        assigned_cols = {}
+        priority = {"feedback_col": 0, "rating_col": 1, "name_col": 2, "received_col": 3, "source_col": 4}
+        
+        for col_type, col_name in list(columns.items()):
+            if col_name and col_name in df.columns:
+                if col_name in assigned_cols:
+                    # Keep the higher priority assignment
+                    if priority.get(col_type, 5) < priority.get(assigned_cols[col_name], 5):
+                        columns[assigned_cols[col_name]] = None
+                        assigned_cols[col_name] = col_type
+                    else:
+                        columns[col_type] = None
+                else:
+                    assigned_cols[col_name] = col_type
+            elif col_name and col_name not in df.columns:
+                logger.warning(f"Column '{col_name}' assigned to {col_type} but not found in DataFrame")
+                columns[col_type] = None
+        
+        # Log final results
+        logger.info(f"FINAL COLUMN ASSIGNMENT:")
+        for col_type, col_name in columns.items():
+            if col_name:
+                logger.info(f"  {col_type}: '{col_name}'")
+            else:
+                logger.info(f"  {col_type}: Not identified")
+        
+        # Ensure at least feedback column is identified
+        if not columns["feedback_col"]:
+            # Last resort: use the first text column
+            for col in df.columns:
+                if df[col].dtype == 'object':
+                    columns["feedback_col"] = col
+                    logger.warning(f"Using '{col}' as feedback column as absolute last resort")
+                    break
         
         return columns
         
     except Exception as e:
-        logger.error(f"Error identifying columns: {str(e)}")
-        # Return empty result, will fall back to heuristics
-        return {
+        logger.error(f"Critical error in identify_relevant_columns: {str(e)}")
+        # Return safe defaults
+        columns = {
             "feedback_col": None, 
             "rating_col": None,
             "received_col": None,
             "name_col": None,
             "source_col": None
         }
+        
+        # Try to at least identify a text column as feedback
+        try:
+            for col in df.columns:
+                if df[col].dtype == 'object':
+                    columns["feedback_col"] = col
+                    break
+        except:
+            pass
+            
+        return columns
 async def analyze_raw_data_chunks(
     client: AzureOpenAI, 
     raw_data: str,
