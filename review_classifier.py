@@ -146,7 +146,8 @@ class FileConversionError(Exception):
 async def extract_raw_content_from_file(file_content: bytes, filename: str) -> str:
     '''
     Extracts raw text content from file bytes for fallback processing.
-    Handles multiple file types and encodings robustly.
+    Handles multiple file types including PDF, DOCX, Excel, CSV, and text files.
+    Uses conversion API for complex formats like PDF and DOCX.
     
     Args:
         file_content: Raw file bytes
@@ -157,8 +158,9 @@ async def extract_raw_content_from_file(file_content: bytes, filename: str) -> s
     '''
     try:
         file_ext = os.path.splitext(filename)[1].lower()
+        logger.info(f"Extracting raw content from {filename} (type: {file_ext})")
         
-        # For Excel files, try to extract with pandas
+        # For Excel files, use pandas
         if file_ext in ['.xlsx', '.xls', '.xlsm']:
             try:
                 import io
@@ -170,9 +172,10 @@ async def extract_raw_content_from_file(file_content: bytes, filename: str) -> s
                     all_text.append(df.to_string())
                 return '\n'.join(all_text)
             except Exception as excel_error:
-                logger.warning(f"Failed to parse Excel file {filename}: {str(excel_error)}, trying raw extraction")
+                logger.warning(f"Failed to parse Excel file {filename}: {str(excel_error)}")
+                # Fall through to API conversion
         
-        # For CSV, ensure proper parsing
+        # For CSV files, try direct parsing first
         if file_ext == '.csv':
             try:
                 # Try multiple encodings for CSV
@@ -185,16 +188,132 @@ async def extract_raw_content_from_file(file_content: bytes, filename: str) -> s
                     except:
                         continue
             except:
-                logger.warning(f"Failed to parse CSV file {filename}, trying raw extraction")
+                logger.warning(f"Failed to parse CSV file {filename} directly")
+                # Fall through to API conversion
         
-        # Try multiple encodings
+        # For PDF, DOCX, TXT, and other files that need conversion, use the extract-reviews API
+        if file_ext in ['.pdf', '.docx', '.doc', '.txt', '.text', '.rtf', '.odt'] or file_ext not in ['.csv', '.xlsx', '.xls', '.xlsm']:
+            logger.info(f"Using conversion API to extract text from {filename}")
+            
+            # Build extraction prompt for raw text extraction
+            extraction_prompt = f'''
+Extract ALL text content from this document EXACTLY as it appears.
+
+CRITICAL INSTRUCTIONS:
+1. Extract EVERY piece of text in the document
+2. Preserve the original text structure and formatting
+3. Include ALL content - headers, footers, body text, tables, lists, etc.
+4. Do NOT summarize, modify, or filter anything
+5. Extract text in reading order (top to bottom, left to right)
+6. For tables, extract row by row
+7. Maintain paragraph breaks and line spacing
+
+OUTPUT FORMAT:
+Return the raw text content as a single column CSV with these columns:
+- text_content: The extracted text (can be multiline)
+
+IMPORTANT: This is for text extraction only. Extract ALL text regardless of whether it's customer feedback or not.'''
+            
+            # Try conversion with retries
+            max_attempts = 3
+            for attempt in range(max_attempts):
+                try:
+                    logger.info(f"Conversion attempt {attempt + 1}/{max_attempts} for {filename}")
+                    
+                    # Use the conversion API
+                    timeout = aiohttp.ClientTimeout(total=API_TIMEOUT)
+                    async with aiohttp.ClientSession(timeout=timeout) as session:
+                        form_data = aiohttp.FormData()
+                        form_data.add_field(
+                            "file",
+                            file_content,
+                            filename=filename,
+                            content_type=mimetypes.guess_type(filename)[0] or "application/octet-stream"
+                        )
+                        form_data.add_field("mode", "extract")
+                        form_data.add_field("output_format", "csv")
+                        form_data.add_field("prompt", extraction_prompt.strip())
+                        form_data.add_field("columns", "text_content")
+                        
+                        async with session.post(EXTRACT_REVIEWS_API_URL, data=form_data) as resp:
+                            if resp.status != 200:
+                                error_text = await resp.text()
+                                logger.error(f"API error (status {resp.status}): {error_text}")
+                                if attempt < max_attempts - 1:
+                                    await asyncio.sleep(2 ** attempt)
+                                    continue
+                                else:
+                                    raise FileConversionError(f"Failed to convert file: {error_text}")
+                            
+                            # Parse JSON response
+                            payload = await resp.json()
+                            
+                            if payload.get("status") != "success":
+                                msg = payload.get("message", "Unknown API error")
+                                raise FileConversionError(f"API reported failure: {msg}")
+                            
+                            download_url = payload.get("download_url")
+                            if not download_url:
+                                raise FileConversionError("No download_url in API response")
+                        
+                        # Download the CSV content
+                        async with session.get(download_url) as csv_resp:
+                            if csv_resp.status != 200:
+                                error_text = await csv_resp.text()
+                                raise FileConversionError(f"CSV download failed: {error_text}")
+                            
+                            csv_content = await csv_resp.text()
+                    
+                    # Extract text from CSV response
+                    if csv_content and csv_content.strip():
+                        try:
+                            # Parse the CSV to get the text content
+                            df = pd.read_csv(StringIO(csv_content))
+                            if 'text_content' in df.columns:
+                                # Join all text content
+                                text_parts = df['text_content'].dropna().tolist()
+                                extracted_text = '\n'.join(str(part) for part in text_parts)
+                                if extracted_text.strip():
+                                    logger.info(f"Successfully extracted {len(extracted_text)} characters from {filename}")
+                                    return extracted_text
+                            else:
+                                # If no text_content column, try to use whatever columns exist
+                                extracted_text = df.to_string()
+                                if extracted_text.strip():
+                                    logger.info(f"Extracted text using all columns: {len(extracted_text)} characters")
+                                    return extracted_text
+                        except Exception as parse_error:
+                            logger.warning(f"Failed to parse CSV response: {str(parse_error)}")
+                            # Return raw CSV content as fallback
+                            if csv_content.strip():
+                                return csv_content
+                    
+                except asyncio.TimeoutError:
+                    logger.error(f"Timeout on attempt {attempt + 1}")
+                    if attempt < max_attempts - 1:
+                        await asyncio.sleep(2 ** attempt)
+                    else:
+                        logger.warning("All conversion attempts timed out, falling back to encoding attempts")
+                        break
+                
+                except Exception as e:
+                    logger.error(f"Conversion attempt {attempt + 1} failed: {str(e)}")
+                    if attempt < max_attempts - 1:
+                        await asyncio.sleep(2 ** attempt)
+                    else:
+                        logger.warning("All conversion attempts failed, falling back to encoding attempts")
+                        break
+        
+        # Fallback: Try multiple encodings for text-like files
+        logger.info(f"Attempting direct text extraction for {filename}")
         encodings = ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1', 'utf-16', 'utf-16-le', 'utf-16-be', 'ascii']
         
         for encoding in encodings:
             try:
                 text = file_content.decode(encoding)
                 # Basic validation - check if we got reasonable text
-                if len(text) > 0 and text.isprintable() or '\n' in text or '\r' in text:
+                if len(text) > 0 and (text.isprintable() or '\n' in text or '\r' in text):
+                    logger.info(f"Successfully decoded {filename} using {encoding} encoding")
                     return text
             except:
                 continue
@@ -202,17 +321,29 @@ async def extract_raw_content_from_file(file_content: bytes, filename: str) -> s
         # If all encodings fail, try with error handling
         for encoding in ['utf-8', 'latin-1']:
             try:
-                return file_content.decode(encoding, errors='ignore')
+                text = file_content.decode(encoding, errors='ignore')
+                if text.strip():
+                    logger.warning(f"Decoded {filename} using {encoding} with errors ignored")
+                    return text
             except:
                 continue
         
         # Last resort - force UTF-8 with replacement
+        logger.warning(f"Using UTF-8 with replacement characters for {filename}")
         return file_content.decode('utf-8', errors='replace')
         
     except Exception as e:
-        logger.error(f"Error extracting content from {filename}: {str(e)}")
+        logger.error(f"Critical error extracting content from {filename}: {str(e)}")
         # Return whatever we can extract
-        return str(file_content)[:150000]  # Limit to prevent memory issues
+        try:
+            # For known binary formats, return an error message
+            if file_ext in ['.pdf', '.docx', '.doc']:
+                return f"Error: Unable to extract text from {file_ext} file. The file appears to be corrupted or in an unsupported format."
+            else:
+                # Try basic text extraction
+                return file_content.decode('utf-8', errors='replace')[:150000]
+        except:
+            return f"Error: Unable to extract any text content from {filename}"
 async def generate_insight_summary_direct(
     client: AzureOpenAI,
     content: str,
