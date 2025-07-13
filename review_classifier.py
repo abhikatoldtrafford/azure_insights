@@ -141,16 +141,743 @@ COMMON_KEY_AREAS = [
     "App Filters & Sorting"
 ]
 class FileConversionError(Exception):
-    """Custom exception for file conversion errors"""
+    '''Custom exception for file conversion errors'''
     pass
+async def extract_raw_content_from_file(file_content: bytes, filename: str) -> str:
+    '''
+    Extracts raw text content from file bytes for fallback processing.
+    Handles multiple file types and encodings robustly.
+    
+    Args:
+        file_content: Raw file bytes
+        filename: Original filename for type detection
+        
+    Returns:
+        Raw text content as string
+    '''
+    try:
+        file_ext = os.path.splitext(filename)[1].lower()
+        
+        # For Excel files, try to extract with pandas
+        if file_ext in ['.xlsx', '.xls', '.xlsm']:
+            try:
+                import io
+                excel_file = pd.ExcelFile(io.BytesIO(file_content))
+                all_text = []
+                for sheet in excel_file.sheet_names:
+                    df = pd.read_excel(io.BytesIO(file_content), sheet_name=sheet)
+                    all_text.append(f"Sheet: {sheet}\n")
+                    all_text.append(df.to_string())
+                return '\n'.join(all_text)
+            except Exception as excel_error:
+                logger.warning(f"Failed to parse Excel file {filename}: {str(excel_error)}, trying raw extraction")
+        
+        # For CSV, ensure proper parsing
+        if file_ext == '.csv':
+            try:
+                # Try multiple encodings for CSV
+                for encoding in ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1']:
+                    try:
+                        text = file_content.decode(encoding)
+                        # Validate it's actually CSV-like
+                        if ',' in text or '\t' in text or '|' in text:
+                            return text
+                    except:
+                        continue
+            except:
+                logger.warning(f"Failed to parse CSV file {filename}, trying raw extraction")
+        
+        # Try multiple encodings
+        encodings = ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1', 'utf-16', 'utf-16-le', 'utf-16-be', 'ascii']
+        
+        for encoding in encodings:
+            try:
+                text = file_content.decode(encoding)
+                # Basic validation - check if we got reasonable text
+                if len(text) > 0 and text.isprintable() or '\n' in text or '\r' in text:
+                    return text
+            except:
+                continue
+        
+        # If all encodings fail, try with error handling
+        for encoding in ['utf-8', 'latin-1']:
+            try:
+                return file_content.decode(encoding, errors='ignore')
+            except:
+                continue
+        
+        # Last resort - force UTF-8 with replacement
+        return file_content.decode('utf-8', errors='replace')
+        
+    except Exception as e:
+        logger.error(f"Error extracting content from {filename}: {str(e)}")
+        # Return whatever we can extract
+        return str(file_content)[:150000]  # Limit to prevent memory issues
+async def generate_insight_summary_direct(
+    client: AzureOpenAI,
+    content: str,
+    max_chars: int = 150000  # Approximately 50k tokens
+) -> Dict[str, str]:
+    '''
+    Directly generates insight summary from raw content using Azure OpenAI.
+    This bypasses all preprocessing and generates insights from any content.
+    
+    Args:
+        client: Azure OpenAI client
+        content: Raw content from any file type
+        max_chars: Maximum characters to process
+        
+    Returns:
+        Dictionary with user_loves, feature_request, pain_point, and overall_summary
+    '''
+    try:
+        logger.info(f"Generating direct insight summary from {len(content)} characters")
+        
+        # Truncate if too long
+        if len(content) > max_chars:
+            logger.info(f"Truncating content from {len(content)} to {max_chars} characters")
+            content = content[:max_chars]
+        
+        prompt = f'''
+You are an EXPERT customer feedback analyst with 20+ years of experience in product management and customer research. Your specialty is uncovering hidden patterns, critical issues, and actionable insights that others might miss.
 
+Your task is to perform a DEEP, CRITICAL analysis of customer feedback data. Be thorough, be skeptical, and dig beneath the surface. Do NOT accept things at face value. BE RESOURCEFUL - extract insights even from limited or vague feedback.
+
+CRITICAL ANALYSIS REQUIREMENTS:
+1. **Be Brutally Honest**: Don't sugarcoat problems or exaggerate positives
+2. **Find Root Causes**: Don't just identify symptoms - dig deeper to find WHY issues exist
+3. **Identify Patterns**: Look for recurring themes across multiple feedback items
+4. **Prioritize by Impact**: Focus on issues that affect the most users or cause the most frustration
+5. **Be Specific**: Use exact quotes, specific features, and concrete examples from the feedback
+6. **Avoid Generic Statements**: Never use vague phrases like "various issues" or "some problems"
+7. **BE RESOURCEFUL**: Even with vague feedback, extract whatever patterns and insights you can find
+8. **NEVER HALLUCINATE**: Base EVERYTHING on the actual feedback provided - if you're not sure, say so
+
+CUSTOMER FEEDBACK DATA:
+{content}
+
+### HANDLING LIMITED OR VAGUE FEEDBACK:
+Even with limited feedback, you MUST extract whatever insights are available:
+- **Vague Positives**: "It's okay", "not bad", "decent" → indicates basic satisfaction but lack of delight
+- **Vague Negatives**: "could be better", "not great", "meh" → indicates unmet expectations
+- **Repeated Vague Terms**: Multiple mentions of "slow", "confusing", "broken" → real issues exist even without specifics
+- **Emotional Indicators**: "frustrated", "annoyed", "love", "hate" → strong feelings about specific aspects
+- **Implicit Requests**: "I wish...", "hopefully someday...", "almost perfect" → hidden feature requests
+- **Question Patterns**: "How do I...?", "Where is...?", "Why can't I...?" → usability issues
+
+Perform your analysis following these specific guidelines:
+
+### 1. USER_LOVES Analysis
+Identify what users GENUINELY love - not just tolerate or find "okay":
+- What specific features generate enthusiasm and delight?
+- What do users explicitly praise or recommend to others?
+- What keeps users coming back despite any issues?
+- Look for emotional language indicating true satisfaction
+- If users don't clearly love anything, be honest about it
+
+### 2. FEATURE_REQUEST Analysis
+Identify the most critical missing features or enhancements:
+- What features do multiple users request?
+- What functionality gaps cause users to consider alternatives?
+- What would transform the product from good to great?
+- Look for phrases like "I wish", "It would be great if", "Missing", "Needs"
+- Prioritize requests that would solve real user problems
+
+### 3. PAIN_POINT Analysis (BE EXTRA CRITICAL HERE)
+Uncover the REAL problems that frustrate users:
+- What causes users to abandon the product?
+- What generates the most negative emotion?
+- What bugs, crashes, or errors are mentioned?
+- What workflow inefficiencies waste user time?
+- What confuses or misleads users?
+- Look for strong negative language, complaints, and frustration indicators
+- Consider both frequency and severity of issues
+
+### 4. OVERALL_SUMMARY Analysis
+Provide a balanced, insightful 50-80 word synthesis that:
+- Captures the TRUE sentiment balance (not just positive spin)
+- Identifies the most critical insights for product improvement
+- Highlights any concerning trends or patterns
+- Gives actionable direction for the product team
+- Reflects the actual ratio of positive to negative feedback
+
+EXAMPLE RESPONSES (showing different scenarios):
+
+EXAMPLE 1 - Mixed Feedback with Critical Issues:
+{{
+    "user_loves": "Users genuinely appreciate the auto-save feature that has prevented data loss for 73% of reviewers, and the keyboard shortcuts that power users specifically mention save them 2-3 hours weekly.",
+    "feature_request": "87% of users desperately need offline mode, with 12 users threatening to switch to competitors. Integration with Slack and real-time collaboration features are the second most requested, mentioned by 45% of reviewers.",
+    "pain_point": "Critical bug: app crashes during image uploads larger than 2MB affecting 68% of users, causing data loss. Performance degrades severely with 50+ items, making the app 'unusable' according to 34 reviews. Login failures spike every Tuesday.",
+    "overall_summary": "While core features are appreciated, critical stability issues overshadow positives. The image upload crash bug alone has caused 68% of users significant frustration. Without addressing the performance issues and adding offline mode, user churn will likely accelerate based on explicit switching threats in reviews."
+}}
+
+EXAMPLE 2 - Predominantly Negative Feedback:
+{{
+    "user_loves": "Only 3 users mentioned anything positive, specifically praising the color scheme and initial setup wizard. Insufficient positive feedback to identify genuinely loved features.",
+    "feature_request": "Users want basic functionality that should already exist: undo/redo (mentioned 43 times), search function (38 times), and data export (35 times). These aren't enhancements - they're table stakes features.",
+    "pain_point": "Catastrophic data sync failures have caused 23 users to lose weeks of work. The app freezes for 30+ seconds when switching views (mentioned in 89% of reviews). Customer support is non-existent with average response time of 3 weeks.",
+    "overall_summary": "Product is fundamentally broken with 92% negative sentiment. Data loss bugs and missing basic features make this barely functional. Users are actively warning others not to purchase. Requires immediate critical bug fixes and feature parity with competitors before focusing on any enhancements."
+}}
+
+EXAMPLE 3 - Limited/Vague Feedback (STILL EXTRACT WHAT YOU CAN):
+{{
+    "user_loves": "Among the limited feedback, 3 users mentioned the interface is 'clean' and 2 specifically said setup was 'easy'. One user wrote 'finally something that just works' suggesting reliability is appreciated, though specifics weren't provided.",
+    "feature_request": "While not explicitly stated as requests, 4 users mentioned 'wish it did more' and 2 asked 'can it connect to [other tool]?' suggesting integration capabilities and expanded functionality are desired. One review ended with 'almost perfect' implying missing features.",
+    "pain_point": "5 reviews mentioned 'sometimes slow' without specifying when/where. 3 users said 'could be better' particularly around 'finding things'. One frustrated user wrote 'why is this so hard?' but didn't specify what 'this' refers to - likely a workflow issue.",
+    "overall_summary": "Despite vague feedback, patterns emerge: users appreciate the clean interface and reliability but experience performance issues and navigation difficulties. The repeated mentions of wanting 'more' suggest the core product works but lacks depth. Even limited feedback reveals need for performance optimization and feature expansion."
+}}
+
+CRITICAL REMINDERS:
+- Count and cite specific numbers when multiple users mention the same thing
+- Use actual quotes from reviews when they illustrate key points
+- If feedback is overwhelmingly negative, reflect that honestly
+- ALWAYS try to extract SOMETHING meaningful, even from vague feedback:
+  * Look for repeated words or phrases even if vague ("slow", "better", "more")
+  * Note emotional indicators even without specifics ("frustrated", "happy", "disappointed")
+  * Identify patterns in what's NOT being said (no mentions of price = likely not an issue)
+  * Extract any hints or implications ("almost perfect" = something is missing)
+  * Use frequency of vague complaints as a signal ("5 mentions of 'slow' = performance issue")
+- Only say "unable to identify" when there is LITERALLY nothing to work with
+- Look for hidden issues between the lines (e.g., workarounds users describe)
+- Consider what users DON'T say (missing expected positive feedback can be telling)
+- Flag any contradictions in the feedback
+- Note any patterns in user types, use cases, or contexts
+
+RESPOND ONLY WITH VALID JSON. Be critical, be thorough, be honest.'''
+        
+        # Retry logic
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                response = client.chat.completions.create(
+                    model="gpt-4.1-mini",
+                    messages=[
+                        {
+                            "role": "system", 
+                            "content": "You are a senior customer feedback analyst. Extract insights based ONLY on provided content. Never make up information."
+                        },
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.2,
+                    max_tokens=1500,
+                    response_format={"type": "json_object"}
+                )
+                
+                result = json.loads(response.choices[0].message.content)
+                
+                # Validate required fields
+                required_fields = ["user_loves", "feature_request", "pain_point", "overall_summary"]
+                for field in required_fields:
+                    if field not in result or not result[field] or len(result[field].strip()) < 10:
+                        raise ValueError(f"Invalid or missing field: {field}")
+                
+                logger.info("Successfully generated insight summary")
+                return result
+                
+            except Exception as e:
+                logger.error(f"Attempt {attempt + 1} failed: {str(e)}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(1)
+                else:
+                    # Return default insights on final failure
+                    return {
+                        "user_loves": "Unable to determine what users love from the provided content",
+                        "feature_request": "Unable to identify feature requests from the provided content",
+                        "pain_point": "Unable to identify pain points from the provided content",
+                        "overall_summary": "Analysis could not be completed due to processing errors. Please ensure the file contains valid customer feedback."
+                    }
+                    
+    except Exception as e:
+        logger.error(f"Critical error in generate_insight_summary_direct: {str(e)}")
+        return {
+            "user_loves": "Unable to analyze positive feedback aspects",
+            "feature_request": "Unable to analyze feature requests",
+            "pain_point": "Unable to analyze pain points",
+            "overall_summary": "Critical error prevented feedback analysis. Please try again."
+        }
+def sanity_check_analysis_results(analysis_results: Dict[str, Any]) -> bool:
+    '''
+    Checks if analysis results from CSV flow are valid and meaningful.
+    Returns True if results are good, False if we should use fallback.
+    
+    Args:
+        analysis_results: Results from process_csv_data or process_excel_data
+        
+    Returns:
+        Boolean indicating if results are valid
+    '''
+    try:
+        # Check if we have the basic structure
+        if not analysis_results:
+            logger.warning("Sanity check: No analysis results")
+            return False
+            
+        if "key_areas" not in analysis_results:
+            logger.warning("Sanity check: Missing key_areas")
+            return False
+            
+        key_areas = analysis_results.get("key_areas", [])
+        
+        # Must have at least 2 key areas
+        if len(key_areas) < 2:
+            logger.warning(f"Sanity check: Only {len(key_areas)} key areas found")
+            return False
+            
+        # Check for diversity in area types
+        area_types = set()
+        for area in key_areas:
+            if isinstance(area, dict):
+                area_type = area.get("area_type", "issue")
+                area_types.add(area_type)
+        
+        # Should have both features and issues
+        if len(area_types) < 2:
+            logger.warning(f"Sanity check: Limited diversity in area types: {area_types}")
+            return False
+            
+        # Check classified feedback
+        classified_feedback = analysis_results.get("classified_feedback", {})
+        if not classified_feedback:
+            logger.warning("Sanity check: No classified feedback")
+            return False
+            
+        # Count total feedback items
+        total_feedback = sum(len(feedbacks) for feedbacks in classified_feedback.values())
+        if total_feedback < 5:  # Minimum threshold
+            logger.warning(f"Sanity check: Only {total_feedback} total feedback items")
+            return False
+            
+        # Check insight summary quality
+        insights = analysis_results.get("insight_summary", {})
+        if not insights:
+            logger.warning("Sanity check: No insight summary")
+            return False
+            
+        # Check if insights are meaningful (not just error messages)
+        for key in ["user_loves", "feature_request", "pain_point"]:
+            value = insights.get(key, "")
+            if "unable to" in value.lower() or "error" in value.lower() or len(value) < 30:
+                logger.warning(f"Sanity check: Poor quality insight for {key}: {value[:50]}...")
+                return False
+        
+        logger.info("Sanity check: Analysis results are valid")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Sanity check error: {str(e)}")
+        return False
+async def generate_complete_analysis_via_completions(
+    client: AzureOpenAI,
+    raw_content: str,
+    source: str = None,
+    return_raw_feedback: bool = False,
+    max_retries: int = 5  # Increased retries
+) -> Dict[str, Any]:
+    '''
+    Ultimate fallback: Generates complete analysis structure from raw content.
+    Returns exact same format as normal processing flow.
+    
+    Args:
+        client: Azure OpenAI client
+        raw_content: Raw content from any file
+        source: Source identifier
+        return_raw_feedback: Whether to include raw feedback samples
+        max_retries: Number of retry attempts
+        
+    Returns:
+        Complete analysis matching expected format
+    '''
+    logger.info(f"Generating complete analysis via completions ({len(raw_content)} chars)")
+    
+    # Truncate if needed
+    max_chars = 100000
+    if len(raw_content) > max_chars:
+        logger.info(f"Truncating content from {len(raw_content)} to {max_chars} chars")
+        raw_content = raw_content[:max_chars]
+    
+    prompt = f'''
+You are an expert customer feedback analyst. Your task is to analyze content and return EXACTLY the JSON structure shown below.
+
+⚠️ CRITICAL: The UI will BREAK if you don't follow this EXACT structure. Every key must be spelled correctly. Every field must be present.
+
+INPUT CONTENT:
+{raw_content}
+
+YOU MUST RETURN THIS EXACT STRUCTURE (copy the keys exactly):
+
+{{
+    "analysis_results": [
+        {{
+            "key_area": "string - 2-4 words describing the area",
+            "customer_problem": "string - one clear sentence describing the issue/request",
+            "number_of_users": integer - realistic count based on feedback,
+            "type": "string - MUST be exactly 'feature' or 'issue' (lowercase)",
+            "raw_feedbacks": [
+                {{
+                    "Received": "string - date in YYYY-MM-DD format or exactly 'N/A'",
+                    "Source": "string - source or exactly '{source or 'N/A'}'",
+                    "Customer Feedback": "string - the actual feedback text",
+                    "Name": "string - customer name or exactly 'N/A'",
+                    "sentiment_score": float - number between -1.0 and 1.0
+                }}
+            ]
+        }}
+    ],
+    "summary": {{
+        "total_feedback_items": integer - sum of all number_of_users,
+        "total_key_areas": integer - count of items in analysis_results
+    }},
+    "insight_summary": {{
+        "user_loves": "string - what users genuinely appreciate",
+        "feature_request": "string - most requested features",
+        "pain_point": "string - biggest problems",
+        "overall_summary": "string - 50-80 word balanced summary"
+    }}
+}}
+
+🔴 CRITICAL RULES:
+1. EVERY key must be EXACTLY as shown above (case-sensitive)
+2. "type" MUST be exactly "feature" or "issue" (lowercase, no variations)
+3. Every raw_feedback item MUST have ALL 5 fields: Received, Source, Customer Feedback, Name, sentiment_score
+4. Use EXACTLY "N/A" (not "n/a", "NA", "Unknown", etc.) for missing values
+5. sentiment_score MUST be a float between -1.0 and 1.0
+6. number_of_users MUST be an integer (not string, not float)
+7. total_feedback_items MUST equal the sum of all number_of_users
+8. total_key_areas MUST equal the count of analysis_results items
+
+📋 CLASSIFICATION RULES:
+- "feature" = requests for new functionality, enhancements, "I wish", "want", "need", "add"
+- "issue" = problems, bugs, errors, complaints, "broken", "slow", "crash", "doesn't work"
+
+📊 SENTIMENT SCORING:
+- -1.0 to -0.7: Extremely negative (hate, terrible, worst)
+- -0.6 to -0.3: Negative (frustrated, disappointed)
+- -0.2 to 0.2: Neutral (okay, fine, average)
+- 0.3 to 0.6: Positive (good, like, helpful)
+- 0.7 to 1.0: Very positive (love, excellent, amazing)
+
+📌 REAL EXAMPLE 1 (Reference Management System):
+{{
+    "analysis_results": [
+        {{
+            "key_area": "Reference Management",
+            "customer_problem": "Users struggle to renumber references after adding a new one and want automatic placement in correct order.",
+            "number_of_users": 12,
+            "type": "feature",
+            "raw_feedbacks": [
+                {{
+                    "Received": "N/A",
+                    "Source": "N/A",
+                    "Customer Feedback": "Users struggled to renumber references after adding a new one at the end of the list; they wanted it to be placed in its correct order.",
+                    "Name": "N/A",
+                    "sentiment_score": -0.038966266735042165
+                }},
+                {{
+                    "Received": "N/A",
+                    "Source": "N/A", 
+                    "Customer Feedback": "PubMed/CrossRef integration was appreciated, as it ensured only valid references.",
+                    "Name": "N/A",
+                    "sentiment_score": 0.14952857496364988
+                }}
+            ]
+        }},
+        {{
+            "key_area": "Affiliation Editing",
+            "customer_problem": "Adding a new affiliation is not intuitive and users mistakenly click 'cite affiliation' instead.",
+            "number_of_users": 8,
+            "type": "issue",
+            "raw_feedbacks": [
+                {{
+                    "Received": "N/A",
+                    "Source": "N/A",
+                    "Customer Feedback": "Adding a new affiliation was not intuitive, as they mistakenly clicked 'cite affiliation' instead.",
+                    "Name": "N/A",
+                    "sentiment_score": -0.040920173348273664
+                }}
+            ]
+        }}
+    ],
+    "summary": {{
+        "total_feedback_items": 20,
+        "total_key_areas": 2
+    }},
+    "insight_summary": {{
+        "user_loves": "Users appreciate the PubMed/CrossRef integration for ensuring valid references and the clear task list interface.",
+        "feature_request": "Users most commonly request improved reference management with automatic renumbering and correct ordering when adding new references.",
+        "pain_point": "The biggest frustration is the unintuitive affiliation editing process where users confuse 'cite affiliation' with adding new affiliations.",
+        "overall_summary": "While users value the reference validation features, they struggle with reference ordering and affiliation management. The interface needs clearer labeling and automatic reference renumbering to improve the user experience."
+    }}
+}}
+
+📌 REAL EXAMPLE 2 (Mobile App):
+{{
+    "analysis_results": [
+        {{
+            "key_area": "App Performance",
+            "customer_problem": "App crashes frequently during photo uploads larger than 2MB causing data loss.",
+            "number_of_users": 23,
+            "type": "issue",
+            "raw_feedbacks": [
+                {{
+                    "Received": "2024-01-15",
+                    "Source": "App Store",
+                    "Customer Feedback": "The app keeps crashing when I try to upload photos from my vacation. Lost all my edits!",
+                    "Name": "John Smith",
+                    "sentiment_score": -0.8
+                }}
+            ]
+        }},
+        {{
+            "key_area": "Offline Mode",
+            "customer_problem": "Users need ability to access and edit data without internet connection.",
+            "number_of_users": 18,
+            "type": "feature",
+            "raw_feedbacks": [
+                {{
+                    "Received": "2024-01-20",
+                    "Source": "Feature Request Form",
+                    "Customer Feedback": "Please add offline mode so I can work during flights without losing progress.",
+                    "Name": "Sarah Johnson",
+                    "sentiment_score": -0.3
+                }}
+            ]
+        }}
+    ],
+    "summary": {{
+        "total_feedback_items": 41,
+        "total_key_areas": 2
+    }},
+    "insight_summary": {{
+        "user_loves": "Users appreciate the intuitive interface design and fast cloud sync when network is available.",
+        "feature_request": "Offline mode is the most requested feature, with 44% of users needing to work without internet connectivity.",
+        "pain_point": "App crashes during photo uploads affect 56% of users, causing significant data loss and workflow disruption.",
+        "overall_summary": "While the interface is valued, critical stability issues and missing offline capability are driving users to competitors. Photo upload crashes need immediate attention to prevent user churn."
+    }}
+}}
+
+🔄 PROCESSING STEPS:
+1. Identify individual feedback items in the content
+2. Group similar feedback into 3-8 key areas
+3. Determine if each area is "feature" or "issue"
+4. Count realistic number of users per area
+5. Extract 1-5 sample feedbacks per area
+6. Calculate sentiment scores for each feedback
+7. Generate honest insights based on the feedback
+
+⚠️ FINAL REMINDERS:
+- If limited feedback exists, create fewer areas (minimum 1)
+- Always base everything on actual content - no hallucination
+- Every analysis_results item MUST have ALL fields
+- Every raw_feedback MUST have EXACTLY these 5 fields: Received, Source, Customer Feedback, Name, sentiment_score
+- Use EXACTLY "N/A" for missing values
+- Double-check that total_feedback_items equals sum of number_of_users
+- Ensure all keys are spelled EXACTLY as shown
+
+7. Ensure all keys are spelled EXACTLY as shown
+
+RESPOND WITH VALID JSON ONLY. The UI depends on this exact structure.'''
+    
+    for attempt in range(max_retries):
+        try:
+            logger.info(f"Attempt {attempt + 1}/{max_retries} for complete analysis")
+            
+            response = client.chat.completions.create(
+                model="gpt-4.1-mini",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "Generate structured feedback analysis. Never hallucinate. Base everything on provided content."
+                    },
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.2,
+                max_tokens=4000,
+                response_format={"type": "json_object"}
+            )
+            
+            result = json.loads(response.choices[0].message.content)
+            
+            # STRICT validation of structure
+            if not isinstance(result, dict):
+                raise ValueError("Response is not a dictionary")
+            
+            # Check top-level keys
+            required_top_keys = ["analysis_results", "summary", "insight_summary"]
+            missing_keys = [k for k in required_top_keys if k not in result]
+            if missing_keys:
+                raise ValueError(f"Missing required top-level keys: {missing_keys}")
+            
+            # Validate analysis_results
+            if not isinstance(result["analysis_results"], list):
+                raise ValueError("analysis_results must be a list")
+            
+            if len(result["analysis_results"]) == 0:
+                result["analysis_results"] = [{
+                    "key_area": "General Feedback",
+                    "customer_problem": "Limited feedback data available",
+                    "number_of_users": 1,
+                    "type": "issue",
+                    "raw_feedbacks": [{
+                        "Received": "N/A",
+                        "Source": source or "N/A",
+                        "Customer Feedback": "No specific feedback extracted",
+                        "Name": "N/A",
+                        "sentiment_score": 0.0
+                    }]
+                }]
+            
+            # Validate each analysis result
+            for i, area in enumerate(result["analysis_results"]):
+                # Check required fields
+                required_area_keys = ["key_area", "customer_problem", "number_of_users", "type"]
+                area_missing = [k for k in required_area_keys if k not in area]
+                if area_missing:
+                    raise ValueError(f"Analysis result {i} missing keys: {area_missing}")
+                
+                # Validate types
+                if not isinstance(area["key_area"], str) or len(area["key_area"]) < 2:
+                    area["key_area"] = f"Area {i+1}"
+                
+                if not isinstance(area["customer_problem"], str) or len(area["customer_problem"]) < 5:
+                    area["customer_problem"] = "Unspecified customer concern"
+                
+                if not isinstance(area["number_of_users"], int) or area["number_of_users"] < 0:
+                    area["number_of_users"] = 1
+                
+                if area["type"] not in ["feature", "issue"]:
+                    # Try to infer from problem description
+                    problem_lower = area["customer_problem"].lower()
+                    if any(word in problem_lower for word in ["want", "need", "request", "add", "missing"]):
+                        area["type"] = "feature"
+                    else:
+                        area["type"] = "issue"
+                
+                # Validate raw_feedbacks
+                if "raw_feedbacks" not in area:
+                    area["raw_feedbacks"] = []
+                
+                if not isinstance(area["raw_feedbacks"], list):
+                    area["raw_feedbacks"] = []
+                
+                # Validate each feedback
+                for j, feedback in enumerate(area["raw_feedbacks"]):
+                    if not isinstance(feedback, dict):
+                        area["raw_feedbacks"][j] = {
+                            "Received": "N/A",
+                            "Source": source or "N/A",
+                            "Customer Feedback": str(feedback),
+                            "Name": "N/A",
+                            "sentiment_score": 0.0
+                        }
+                        continue
+                    
+                    # Check all required feedback fields
+                    required_feedback_keys = ["Received", "Source", "Customer Feedback", "Name", "sentiment_score"]
+                    for key in required_feedback_keys:
+                        if key not in feedback:
+                            if key == "Received":
+                                feedback[key] = "N/A"
+                            elif key == "Source":
+                                feedback[key] = source or "N/A"
+                            elif key == "Customer Feedback":
+                                feedback[key] = "No feedback text"
+                            elif key == "Name":
+                                feedback[key] = "N/A"
+                            elif key == "sentiment_score":
+                                feedback[key] = 0.0
+                    
+                    # Validate sentiment score
+                    try:
+                        score = float(feedback["sentiment_score"])
+                        feedback["sentiment_score"] = max(-1.0, min(1.0, score))
+                    except:
+                        feedback["sentiment_score"] = 0.0
+                
+                # Remove raw_feedbacks if not requested
+                if not return_raw_feedback and "raw_feedbacks" in area:
+                    del area["raw_feedbacks"]
+            
+            # Validate summary
+            if not isinstance(result["summary"], dict):
+                result["summary"] = {}
+            
+            total_users = sum(area.get("number_of_users", 0) for area in result["analysis_results"])
+            result["summary"]["total_feedback_items"] = total_users
+            result["summary"]["total_key_areas"] = len(result["analysis_results"])
+            
+            # Validate insight_summary
+            if not isinstance(result["insight_summary"], dict):
+                result["insight_summary"] = {}
+            
+            required_insights = ["user_loves", "feature_request", "pain_point", "overall_summary"]
+            for field in required_insights:
+                if field not in result["insight_summary"] or not isinstance(result["insight_summary"][field], str) or len(result["insight_summary"][field]) < 10:
+                    result["insight_summary"][field] = f"Unable to determine {field.replace('_', ' ')} from provided content"
+            
+            logger.info("Successfully generated complete analysis")
+            logger.info(f"Structure validation passed - {len(result['analysis_results'])} areas, {result['summary']['total_feedback_items']} total items")
+            return result
+            
+        except json.JSONDecodeError as e:
+            logger.error(f"Attempt {attempt + 1} failed - JSON parsing error at position {e.pos}: {str(e)}")
+            logger.error(f"Raw response: {response.choices[0].message.content[:500]}...")
+            if attempt < max_retries - 1:
+                await asyncio.sleep(2 ** attempt)
+                
+        except ValueError as e:
+            logger.error(f"Attempt {attempt + 1} failed - Validation error: {str(e)}")
+            logger.error(f"Response structure: {json.dumps(result, indent=2)[:1000]}...")
+            if attempt < max_retries - 1:
+                await asyncio.sleep(2 ** attempt)
+                
+        except Exception as e:
+            logger.error(f"Attempt {attempt + 1} failed - Unexpected error: {type(e).__name__}: {str(e)}")
+            if attempt < max_retries - 1:
+                await asyncio.sleep(2 ** attempt)
+    
+    # All retries failed
+    logger.error("All attempts failed, returning minimal valid structure")
+    
+    # Return minimal but VALID structure with all required fields
+    minimal_feedback = {
+        "Received": "N/A",
+        "Source": source or "N/A", 
+        "Customer Feedback": "Unable to process feedback due to technical error",
+        "Name": "N/A",
+        "sentiment_score": 0.0
+    }
+    
+    minimal_result = {
+        "analysis_results": [{
+            "key_area": "Processing Error",
+            "customer_problem": "Unable to analyze feedback due to technical issues",
+            "number_of_users": 0,
+            "type": "issue"
+        }],
+        "summary": {
+            "total_feedback_items": 0,
+            "total_key_areas": 1
+        },
+        "insight_summary": {
+            "user_loves": "Unable to process feedback to determine what users love",
+            "feature_request": "Unable to process feedback to identify feature requests",
+            "pain_point": "System encountered errors while processing the feedback data",
+            "overall_summary": "Analysis could not be completed due to technical errors. Please ensure the file contains valid customer feedback and try again."
+        }
+    }
+    
+    # Add raw_feedbacks if requested
+    if return_raw_feedback:
+        minimal_result["analysis_results"][0]["raw_feedbacks"] = [minimal_feedback]
+    
+    return minimal_result
 async def convert_file_to_csv(
     file_content: bytes,
     filename: str,
     prompt: Optional[str] = None,
     mode: str = "extract"
 ) -> str:
-    """
+    '''
     Convert any file to CSV using the extract-reviews API.
     
     Args:
@@ -164,7 +891,7 @@ async def convert_file_to_csv(
         
     Raises:
         FileConversionError: If conversion fails at any point
-    """
+    '''
     try:
         timeout = aiohttp.ClientTimeout(total=API_TIMEOUT)
 
@@ -183,7 +910,7 @@ async def convert_file_to_csv(
                 if prompt:
                     form_data.add_field("prompt", prompt)
                 else:
-                    default_prompt = """
+                    default_prompt = '''
                     Extract customer feedback/reviews from this document.
                     
                     IMPORTANT RULES:
@@ -213,7 +940,7 @@ async def convert_file_to_csv(
                     - Keep the EXACT wording - do not paraphrase or summarize
                     - Include EVERY review found in the document
                     - If unsure whether something is a customer review, check if it contains personal opinion or experience from a customer perspective
-                    """
+                    '''
                     form_data.add_field("prompt", default_prompt.strip())
 
                 form_data.add_field("columns", "user,review_text,date,source,star_rating")
@@ -300,7 +1027,7 @@ async def generate_summary(
     key_areas: List[Dict] = None,
     slow_mode: bool = False
 ) -> Dict[str, str]:
-    """
+    '''
     Analyzes customer feedback to identify what users love, what features they request, their pain points,
     and generates an overall summary of the feedback.
     
@@ -314,7 +1041,7 @@ async def generate_summary(
         
     Returns:
         Dictionary with user_loves, feature_request, pain_point, and overall_summary
-    """
+    '''
     try:
         logger.info(f"Generating summary insights from {len(review_texts)} reviews")
         
@@ -501,7 +1228,7 @@ async def generate_summary(
             combined_reviews = "\n".join([f"- {review}" for review in sample_reviews])
             
             prompt_templates = {
-                "user_loves": f"""
+                "user_loves": f'''
                 Below are {len(sample_reviews)} customer reviews that indicate features or aspects users love about the product:
                 
                 {combined_reviews}
@@ -512,9 +1239,9 @@ async def generate_summary(
                 IMPORTANT: If the reviews don't clearly indicate what users love or contain too little information, 
                 respond with EXACTLY this phrase: "No clear indication of what users love in the provided reviews."
                 DO NOT make up or hallucinate information not present in the reviews.
-                """,
+                ''',
                 
-                "feature_request": f"""
+                "feature_request": f'''
                 Below are {len(sample_reviews)} customer reviews that suggest features users would like to see added:
                 
                 {combined_reviews}
@@ -525,9 +1252,9 @@ async def generate_summary(
                 IMPORTANT: If the reviews don't clearly indicate feature requests or contain too little information, 
                 respond with EXACTLY this phrase: "No clear feature requests identified in the provided reviews."
                 DO NOT make up or hallucinate information not present in the reviews.
-                """,
+                ''',
                 
-                "pain_point": f"""
+                "pain_point": f'''
                 Below are {len(sample_reviews)} customer reviews that highlight pain points or issues:
                 
                 {combined_reviews}
@@ -538,9 +1265,9 @@ async def generate_summary(
                 IMPORTANT: If the reviews don't clearly indicate pain points or contain too little information, 
                 respond with EXACTLY this phrase: "No clear pain points identified in the provided reviews."
                 DO NOT make up or hallucinate information not present in the reviews.
-                """,
+                ''',
                 
-                "overall_summary": f"""
+                "overall_summary": f'''
                 Below are {len(sample_reviews)} selected customer reviews:
                 
                 {combined_reviews}
@@ -558,7 +1285,7 @@ async def generate_summary(
                 IMPORTANT: If the reviews contain insufficient meaningful feedback or are too sparse, 
                 respond with EXACTLY this phrase: "Insufficient meaningful feedback to generate an overall summary."
                 DO NOT make up or hallucinate information not present in the reviews.
-                """
+                '''
             }
             
             try:
@@ -646,7 +1373,7 @@ async def classify_feedback_by_type(
     feedback_embeddings: List[List[float]], 
     feedback_texts: List[str]
 ) -> List[str]:
-    """
+    '''
     Classifies each feedback item as either a feature request or an issue.
     
     Args:
@@ -656,7 +1383,7 @@ async def classify_feedback_by_type(
         
     Returns:
         List of classifications: ["feature", "issue", ...] for each feedback
-    """
+    '''
     try:
         logger.info(f"Classifying {len(feedback_texts)} feedback items as feature/issue")
         
@@ -744,7 +1471,7 @@ async def classify_feedback_by_type(
         # Return all as issues as fallback
         return ["issue"] * len(feedback_texts)
 def standardize_dataframe(df: pd.DataFrame, columns: Dict[str, str], source: str = None) -> pd.DataFrame:
-    """
+    '''
     Standardizes a dataframe to have consistent column names and structure.
     Handles cases where column detection failed or columns don't exist.
     
@@ -755,7 +1482,7 @@ def standardize_dataframe(df: pd.DataFrame, columns: Dict[str, str], source: str
         
     Returns:
         Standardized DataFrame with consistent columns
-    """
+    '''
     try:
         logger.info("Standardizing DataFrame to consistent column structure")
         
@@ -978,7 +1705,7 @@ def standardize_dataframe(df: pd.DataFrame, columns: Dict[str, str], source: str
                 "Source": [source if source else "N/A"]
             })
 async def get_sentiment_anchor_embeddings(client: AzureOpenAI) -> Tuple[List[float], List[float]]:
-    """
+    '''
     Generates and caches embeddings for positive and negative sentiment anchors.
     
     Args:
@@ -986,7 +1713,7 @@ async def get_sentiment_anchor_embeddings(client: AzureOpenAI) -> Tuple[List[flo
         
     Returns:
         Tuple of (positive_anchor_embedding, negative_anchor_embedding)
-    """
+    '''
     global _positive_anchor_embedding, _negative_anchor_embedding
     
     # Return cached embeddings if already generated
@@ -1049,7 +1776,7 @@ async def get_sentiment_anchor_embeddings(client: AzureOpenAI) -> Tuple[List[flo
         return _positive_anchor_embedding, _negative_anchor_embedding
 
 async def calculate_sentiment_scores(review_embeddings: List[List[float]], client: AzureOpenAI) -> List[float]:
-    """
+    '''
     Calculates sentiment scores for reviews by comparing their embeddings to positive/negative anchors.
     
     Args:
@@ -1058,7 +1785,7 @@ async def calculate_sentiment_scores(review_embeddings: List[List[float]], clien
         
     Returns:
         List of sentiment scores between -1 and 1 for each review
-    """
+    '''
     try:
         # Get positive and negative anchor embeddings
         positive_embedding, negative_embedding = await get_sentiment_anchor_embeddings(client)
@@ -1100,7 +1827,7 @@ async def process_excel_data(
     filename: str,
     source: str = None
 ) -> Dict[str, Any]:
-    """
+    '''
     Process Excel file data to extract and classify feedback from all sheets.
     
     Args:
@@ -1111,7 +1838,7 @@ async def process_excel_data(
         
     Returns:
         Dictionary with key areas, classified feedback, and insight summaries
-    """
+    '''
     try:
         # Save the content to a temporary file for pandas to read
         with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as temp:
@@ -1360,7 +2087,7 @@ async def process_excel_data(
                 areas_text = "\n".join([f"{j+1}. {area.get('area', f'Area {j+1}')} ({area.get('area_type', 'issue')})" for j, area in enumerate(key_areas)])
                 feedback_text = "\n".join([f"Feedback {j+1}: {text}" for j, text in enumerate(chunk_texts)])
                 
-                prompt = f"""
+                prompt = f'''
                 I need to classify these customer feedback items into the most relevant categories.
                 
                 CATEGORIES (with their type):
@@ -1384,7 +2111,7 @@ async def process_excel_data(
                 }}
                 
                 Category indices are 0-based, corresponding to the numbered list above.
-                """
+                '''
                 
                 try:
                     response = client.chat.completions.create(
@@ -1499,7 +2226,7 @@ async def process_excel_data(
             excel_text = str(file_content)  # Very crude fallback
             return await analyze_raw_data_chunks(AZURE_CLIENT, excel_text)
 async def identify_key_areas(client: AzureOpenAI, data_sample: str, max_areas: int = 15) -> List[Dict[str, str]]:
-    """
+    '''
     Identifies key problem areas from customer feedback using OpenAI.
     Now also classifies each area as either 'feature' or 'issue'.
     
@@ -1510,7 +2237,7 @@ async def identify_key_areas(client: AzureOpenAI, data_sample: str, max_areas: i
         
     Returns:
         List of dictionaries with 'area', 'problem', and 'area_type' keys
-    """
+    '''
     try:
         logger.info(f"Beginning key problem area identification using {len(data_sample)} characters of sample data")
         # For very small datasets, use a simpler approach
@@ -1518,7 +2245,7 @@ async def identify_key_areas(client: AzureOpenAI, data_sample: str, max_areas: i
             logger.info("Small dataset detected, using simplified key area identification")
             max_areas = min(max_areas, 3)  # Limit areas for small datasets
         # Prepare the prompt for OpenAI
-        prompt = f"""
+        prompt = f'''
         # Customer Feedback Analysis Task
 
         You are a senior product insights analyst specializing in customer feedback pattern recognition. 
@@ -1586,7 +2313,7 @@ async def identify_key_areas(client: AzureOpenAI, data_sample: str, max_areas: i
         ```
 
         Ensure you have a good balance of "feature" and "issue" types. Think carefully about naming each area and classifying correctly.
-        """
+        '''
         
         # Call OpenAI API
         response = client.chat.completions.create(
@@ -1705,7 +2432,7 @@ async def identify_key_areas(client: AzureOpenAI, data_sample: str, max_areas: i
             {"area": "Feature Requests", "problem": "Customer feature requests and enhancements", "area_type": "feature"}
         ]
 async def get_embeddings(client: AzureOpenAI, texts: List[str], slow_mode: bool = False) -> List[List[float]]:
-    """
+    '''
     Generate embeddings for a list of texts.
     
     Args:
@@ -1715,7 +2442,7 @@ async def get_embeddings(client: AzureOpenAI, texts: List[str], slow_mode: bool 
         
     Returns:
         List of embedding vectors
-    """
+    '''
     try:
         # Process in batches to avoid request size limits
         batch_size = 100 if slow_mode else 1000
@@ -1803,7 +2530,7 @@ async def get_embeddings(client: AzureOpenAI, texts: List[str], slow_mode: bool 
         dim = 1536   # text-embedding-3-large dimension
         return [list(np.random.normal(0, 0.1, dim)) for _ in range(len(texts))]
 def cosine_similarity_batch(A: np.ndarray, B: np.ndarray, slow_mode: bool = False) -> np.ndarray:
-    """
+    '''
     Calculate cosine similarity between two sets of vectors efficiently.
     
     Args:
@@ -1813,7 +2540,7 @@ def cosine_similarity_batch(A: np.ndarray, B: np.ndarray, slow_mode: bool = Fals
         
     Returns:
         Similarity matrix of shape (n_samples_A, n_samples_B)
-    """
+    '''
     if slow_mode:
         # Slower iterative implementation (for compatibility)
         n_samples_A, _ = A.shape
@@ -1840,7 +2567,7 @@ def cosine_similarity_batch(A: np.ndarray, B: np.ndarray, slow_mode: bool = Fals
         # Calculate similarity matrix in one operation
         return np.dot(A_norm, B_norm.T)
 async def cosine_similarity(vec1: List[float], vec2: List[float]) -> float:
-    """Calculate cosine similarity between two vectors."""
+    '''Calculate cosine similarity between two vectors.'''
     # Convert to numpy arrays for vectorized operations
     vec1_np = np.array(vec1)
     vec2_np = np.array(vec2)
@@ -1856,7 +2583,7 @@ async def cosine_similarity(vec1: List[float], vec2: List[float]) -> float:
     return dot_product / (norm_a * norm_b)
 
 async def identify_relevant_columns(client: AzureOpenAI, df: pd.DataFrame) -> Dict[str, str]:
-    """
+    '''
     Uses OpenAI to identify which columns contain ratings, feedback text, received date, name, and source.
     Now with extensive fallback logic and validation to ensure proper column identification.
     
@@ -1866,7 +2593,7 @@ async def identify_relevant_columns(client: AzureOpenAI, df: pd.DataFrame) -> Di
         
     Returns:
         Dictionary with column mappings
-    """
+    '''
     try:
         logger.info(f"Beginning column detection on DataFrame with shape: {df.shape}")
         logger.info(f"Available columns: {list(df.columns)}")
@@ -1896,7 +2623,7 @@ async def identify_relevant_columns(client: AzureOpenAI, df: pd.DataFrame) -> Di
         
         # Try OpenAI first
         try:
-            prompt = f"""
+            prompt = f'''
             You are a specialized data analyst focusing on customer feedback analysis. Your task is to precisely identify the most relevant columns in this customer feedback dataset.
 
             DATASET SAMPLE:
@@ -1972,7 +2699,7 @@ async def identify_relevant_columns(client: AzureOpenAI, df: pd.DataFrame) -> Di
                 "name_col": "2: [Exact Column Name]",
                 "source_col": "4: [Exact Column Name]"
             }}
-            """
+            '''
             
             response = client.chat.completions.create(
                 model="gpt-4.1-mini",
@@ -2345,7 +3072,7 @@ async def analyze_raw_data_chunks(
     overlap: int = 500,
     slow_mode: bool = False
 ) -> Dict[str, Any]:
-    """
+    '''
     Analyzes raw unstructured data by chunking and processing with OpenAI.
     
     Args:
@@ -2357,7 +3084,7 @@ async def analyze_raw_data_chunks(
         
     Returns:
         Dictionary with key areas, classified feedback, and insight summaries
-    """
+    '''
     try:
         # Split data into chunks
         chunks = []
@@ -2375,7 +3102,7 @@ async def analyze_raw_data_chunks(
             logger.info(f"Processing chunk {i+1}/{len(chunks)}")
             
             # Extract feedback from chunk
-            prompt = f"""
+            prompt = f'''
             Analyze this raw customer feedback data:
             
             {chunk}
@@ -2386,7 +3113,7 @@ async def analyze_raw_data_chunks(
             
             Format as a JSON array of feedback items.
             Example: ["I can't generate the reports I need", "The mobile app lacks key features"]
-            """
+            '''
             
             try:
                 response = client.chat.completions.create(
@@ -2435,7 +3162,7 @@ async def analyze_raw_data_chunks(
         if chunk_areas:
             # Use OpenAI to consolidate
             areas_text = json.dumps(chunk_areas, indent=2)
-            prompt = f"""
+            prompt = f'''
             I have identified multiple potential problem areas from customer feedback chunks. 
             Please consolidate these into 5-8 main categories, ensuring a balanced mix of feature requests and issues.
             
@@ -2453,7 +3180,7 @@ async def analyze_raw_data_chunks(
                 {{"area": "User Interface", "problem": "The app navigation requires too many taps to access core features", "area_type": "issue"}},
                 {{"area": "Advanced Features", "problem": "Users want AI-powered recommendations and analytics", "area_type": "feature"}}
             ]
-            """
+            '''
             
             response = client.chat.completions.create(
                 model="gpt-4.1-mini",
@@ -2692,7 +3419,7 @@ async def process_csv_data(
     source: str = None,
     slow_mode: bool = False
 ) -> Dict[str, Any]:
-    """
+    '''
     Process structured CSV data to extract and classify feedback.
     
     Args:
@@ -2703,7 +3430,7 @@ async def process_csv_data(
         
     Returns:
         Dictionary with key areas, classified feedback, and insight summaries
-    """
+    '''
     try:
         # Parse CSV data
         df = pd.read_csv(StringIO(csv_data))
@@ -2943,7 +3670,7 @@ async def process_csv_data(
                     areas_text = "\n".join([f"{j+1}. {area.get('area', f'Area {j+1}')} ({area.get('area_type', 'issue')})" for j, area in enumerate(key_areas)])
                     feedback_text = "\n".join([f"Feedback {j+1}: {text}" for j, text in enumerate(chunk_texts)])
                     
-                    prompt = f"""
+                    prompt = f'''
                     I need to classify these customer feedback items into the most relevant categories.
                     
                     CATEGORIES (with their type):
@@ -2967,7 +3694,7 @@ async def process_csv_data(
                     }}
                     
                     Category indices are 0-based, corresponding to the numbered list above.
-                    """
+                    '''
                     
                     try:
                         response = client.chat.completions.create(
@@ -3049,7 +3776,7 @@ async def process_csv_data(
                     combined_reviews = "\n".join([f"- {review}" for review in sample_reviews])
                     
                     # Generate a summary directly from OpenAI
-                    prompt = f"""
+                    prompt = f'''
                     I have a collection of {len(feedback_texts)} customer reviews. Here's a sample:
                     
                     {combined_reviews}
@@ -3062,7 +3789,7 @@ async def process_csv_data(
                     
                     Keep each response to a single concise sentence.
                     Format as a JSON object with these keys: user_loves, feature_request, pain_point, overall_summary
-                    """
+                    '''
                     
                     response = client.chat.completions.create(
                         model="gpt-4.1-mini",
@@ -3136,7 +3863,7 @@ async def process_csv_data(
         logger.info("Falling back to raw data processing")
         return await analyze_raw_data_chunks(client, csv_data)
 async def format_analysis_results(analysis_results: Dict[str, Any], return_raw_feedback: bool = False) -> Dict[str, Any]:
-    """
+    '''
     Format the analysis results into the final structure.
     
     Args:
@@ -3145,7 +3872,7 @@ async def format_analysis_results(analysis_results: Dict[str, Any], return_raw_f
         
     Returns:
         Formatted results matching the required output structure
-    """
+    '''
     key_areas = analysis_results.get("key_areas", [])
     classified_feedback = analysis_results.get("classified_feedback", {})
     insight_summary = analysis_results.get("insight_summary", {
@@ -3218,53 +3945,53 @@ async def format_analysis_results(analysis_results: Dict[str, Any], return_raw_f
         "insight_summary": insight_summary  # Add the insight summary to the return value
     }
 def integrate_with_main_app(app):
-    """
+    '''
     Integrates the customer feedback analysis router with a FastAPI app.
     
     Args:
         app: FastAPI application instance
-    """
+    '''
     app.include_router(router, prefix="/feedback", tags=["customer_feedback"])
     logger.info("Customer feedback analysis API integrated with main app")
 
 # Standalone app routes
 @app.post("/analyze-feedback")
-@async_timeout(180)  # Increased timeout for file conversion + analysis
+@async_timeout(180)
 async def analyze_feedback(
     file: UploadFile = File(...),
     return_raw_feedback: bool = Form(False),
     source: str = Form(None),
-    extraction_prompt: str = Form(None)  # Optional custom extraction prompt
+    extraction_prompt: str = Form(None),
+    mode: str = Form("completions")  # NEW: Processing mode - 'auto', 'csv', 'completions'
 ) -> JSONResponse:
-    """
+    '''
     Analyzes customer feedback from any uploaded file type.
-    Supports CSV, Excel natively, and all other formats through automatic conversion.
     
-    Args:
-        file: Uploaded file (any format)
-        return_raw_feedback: Whether to include raw feedback text in the response
-        source: Optional source value to override the Source column
-        extraction_prompt: Optional custom prompt for file extraction
-        
-    Returns:
-        JSONResponse with analysis results
-    """
+    Modes:
+    - 'auto' (default): Enhanced processing with insight generation
+    - 'csv': Original CSV/Excel processing without enhancements
+    - 'completions': Force all processing through completions fallback
+    '''
     job_id = f"feedback_analysis_{int(time.time())}"
     
     try:
         start_time = time.time()
         logger.info(f"[JOB {job_id}] Starting analysis of file: {file.filename}")
-        logger.info(f"[JOB {job_id}] File content type: {file.content_type}")
+        logger.info(f"[JOB {job_id}] Mode: {mode}")
         logger.info(f"[JOB {job_id}] Return raw feedback: {return_raw_feedback}")
-        logger.info(f"[JOB {job_id}] Source override: {source if source else 'None'}")
+        logger.info(f"[JOB {job_id}] Source: {source or 'None'}")
         
-        # Read the uploaded file
-        logger.info(f"[JOB {job_id}] Reading file content")
+        # Validate mode
+        if mode not in ["auto", "csv", "completions"]:
+            logger.warning(f"[JOB {job_id}] Invalid mode '{mode}', defaulting to 'auto'")
+            mode = "auto"
+        
+        # Read file
         file_content = await file.read()
         file_size = len(file_content)
         logger.info(f"[JOB {job_id}] File size: {file_size/1024:.1f} KB")
         
-        # Validate file size (set reasonable limits)
+        # Validate size
         MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
         if file_size > MAX_FILE_SIZE:
             raise HTTPException(
@@ -3272,189 +3999,221 @@ async def analyze_feedback(
                 detail=f"File too large. Maximum size is {MAX_FILE_SIZE/1024/1024:.0f}MB"
             )
         
-        # Determine file type based on extension
+        # Extract raw content (always needed for completions mode or fallback)
+        raw_content = None
+        if mode in ["auto", "completions"]:
+            raw_content = await extract_raw_content_from_file(file_content, file.filename)
+            logger.info(f"[JOB {job_id}] Extracted {len(raw_content)} chars of raw content")
+        
+        # COMPLETIONS MODE: Skip directly to completions fallback
+        if mode == "completions":
+            logger.info(f"[JOB {job_id}] Mode is 'completions', using direct generation")
+            
+            complete_analysis = await generate_complete_analysis_via_completions(
+                AZURE_CLIENT,
+                raw_content,
+                source,
+                return_raw_feedback
+            )
+            
+            # Return directly with metadata
+            complete_analysis["metadata"] = {
+                "job_id": job_id,
+                "original_filename": file.filename,
+                "file_size_kb": round(file_size / 1024, 2),
+                "processing_time_seconds": round(time.time() - start_time, 2),
+                "file_type": os.path.splitext(file.filename)[1].lower(),
+                "source": source,
+                "processing_method": "completions_mode",
+                "mode": mode
+            }
+            
+            total_items = complete_analysis.get("summary", {}).get("total_feedback_items", 0)
+            total_areas = complete_analysis.get("summary", {}).get("total_key_areas", 0)
+            logger.info(f"[JOB {job_id}] Complete (completions mode): {total_areas} areas, {total_items} items")
+            
+            return JSONResponse(content=complete_analysis, status_code=200)
+        
+        # Determine file type
         file_ext = os.path.splitext(file.filename)[1].lower()
         
-        # MAINTAIN EXISTING LOGIC FOR CSV AND EXCEL FILES
-        if file_ext in SUPPORTED_DIRECT_FORMATS:
-            logger.info(f"[JOB {job_id}] File type {file_ext} is directly supported - using existing logic")
-            
-            # Process Excel files with existing logic
-            if file_ext in ['.xlsx', '.xls', '.xlsm']:
-                logger.info(f"[JOB {job_id}] Detected Excel file, processing with Excel-specific workflow")
-                analysis_results = await process_excel_data(AZURE_CLIENT, file_content, file.filename, source)
-            
-            # Process CSV files with existing logic
-            else:  # .csv
-                # Handle CSV and other file types with existing logic
-                try:
-                    logger.info(f"[JOB {job_id}] Attempting UTF-8 decoding")
-                    file_text = file_content.decode("utf-8")
-                    logger.info(f"[JOB {job_id}] Successfully decoded with UTF-8")
-                except UnicodeDecodeError:
-                    # Try different encoding if UTF-8 fails
-                    try:
-                        logger.info(f"[JOB {job_id}] UTF-8 failed, attempting Latin-1 decoding")
-                        file_text = file_content.decode("latin-1")
-                        logger.info(f"[JOB {job_id}] Successfully decoded with Latin-1")
-                    except Exception:
-                        # If all fails, save to temp file and use pandas to read
-                        logger.info(f"[JOB {job_id}] Text decoding failed, using pandas for parsing")
-                        with tempfile.NamedTemporaryFile(delete=False, suffix='.csv') as temp:
-                            temp.write(file_content)
-                            temp_path = temp.name
-                            logger.info(f"[JOB {job_id}] Saved to temporary file: {temp_path}")
-                        
-                        try:
-                            logger.info(f"[JOB {job_id}] Attempting to read with pandas")
-                            df = pd.read_csv(temp_path)
-                            file_text = df.to_csv(index=False)
-                            logger.info(f"[JOB {job_id}] Successfully parsed with pandas: {df.shape[0]} rows, {df.shape[1]} columns")
-                        except Exception as read_error:
-                            logger.error(f"[JOB {job_id}] Pandas parsing failed: {str(read_error)}")
-                            os.unlink(temp_path)
-                            raise HTTPException(
-                                status_code=400, 
-                                detail=f"Could not parse file: {str(read_error)}"
-                            )
-                        finally:
-                            logger.info(f"[JOB {job_id}] Cleaning up temporary file")
-                            if os.path.exists(temp_path):
-                                os.unlink(temp_path)
-                
-                # Check if it looks like CSV
-                is_csv = ',' in file_text and '\n' in file_text
-                
-                # Process the data
-                if is_csv:
-                    logger.info(f"[JOB {job_id}] File detected as CSV, processing with structured data workflow")
-                    analysis_results = await process_csv_data(AZURE_CLIENT, file_text, source)
-                else:
-                    logger.info(f"[JOB {job_id}] File not detected as CSV, processing as raw text")
-                    analysis_results = await analyze_raw_data_chunks(AZURE_CLIENT, file_text)
+        # Track processing success
+        analysis_results = None
+        processing_method = None
+        use_fallback = False
         
-        else:
-            # NEW PATH: File needs conversion through extract-reviews API
-            logger.info(f"[JOB {job_id}] File type {file_ext} requires conversion via extract-reviews API")
-            
+        # STEP 1: Try direct processing for CSV/Excel
+        if file_ext in ['.csv', '.xlsx', '.xls', '.xlsm']:
+            logger.info(f"[JOB {job_id}] Processing {file_ext} directly")
             try:
-                # Build custom prompt if not provided
-                if not extraction_prompt:
-                    extraction_prompt = f"""
-                    Extract customer feedback/reviews from this {file_ext} file.
-                    Structure the data with these specific columns:
-                    - user: Customer name or reviewer identifier
-                    - review_text: The actual feedback or review content
-                    - date: When the review was submitted
-                    - source: Where the review came from (platform, channel, etc.)
-                    - star_rating: Numerical rating (1-5 stars) or sentiment score
+                if file_ext in ['.xlsx', '.xls', '.xlsm']:
+                    analysis_results = await process_excel_data(AZURE_CLIENT, file_content, file.filename, source)
+                    processing_method = "excel_direct"
+                else:  # CSV
+                    # For CSV mode, we need raw content for validation
+                    if mode == "csv" and not raw_content:
+                        raw_content = await extract_raw_content_from_file(file_content, file.filename)
                     
-                    Focus on extracting all customer opinions, comments, and feedback.
-                    Maintain the context and meaning of each review.
-                    If certain fields are not available, use 'N/A' as the value.
-                    """
-                
-                # Convert file to CSV using the extract-reviews API
-                csv_content = await convert_file_to_csv(
-                    file_content=file_content,
-                    filename=file.filename,
-                    prompt=extraction_prompt,
-                    mode="extract"
-                )
-                
-                logger.info(f"[JOB {job_id}] File converted successfully to CSV")
-                
-                # Validate CSV content
-                if not csv_content or csv_content.strip() == "":
-                    raise ValueError("Conversion resulted in empty CSV content")
-                
-                # Map API column names to standard system column names
-                try:
-                    # Parse the CSV to check and map columns
-                    df = pd.read_csv(StringIO(csv_content))
-                    
-                    # Define the column mapping from API to system
-                    column_mapping = {
-                        'user': 'Name',
-                        'review_text': 'Customer Feedback',
-                        'date': 'Received',
-                        'source': 'Source',
-                        'star_rating': 'Rating'
-                    }
-                    
-                    # Check if we have API column names and map them
-                    columns_mapped = False
-                    for api_col, system_col in column_mapping.items():
-                        if api_col in df.columns:
-                            columns_mapped = True
-                            break
-                    
-                    if columns_mapped:
-                        # Apply the mapping
-                        df = df.rename(columns=column_mapping)
-                        logger.info(f"[JOB {job_id}] Mapped API columns to system columns")
-                        
-                        # Ensure all expected columns exist
-                        expected_columns = ['Name', 'Customer Feedback', 'Received', 'Source']
-                        for col in expected_columns:
-                            if col not in df.columns:
-                                df[col] = 'N/A'
-                        
-                        # Convert back to CSV
-                        csv_content = df.to_csv(index=False)
-                    
-                except Exception as e:
-                    logger.warning(f"[JOB {job_id}] Could not map columns, using original: {str(e)}")
-                
-                # Add source information if not provided
-                if not source:
-                    # Use file type as source hint
-                    source = f"Imported from {file_ext.upper()} file"
-                
-                # Process the converted CSV with existing CSV processing logic
-                logger.info(f"[JOB {job_id}] Processing converted CSV data")
-                analysis_results = await process_csv_data(AZURE_CLIENT, csv_content, source)
-                    
-            except FileConversionError as e:
-                logger.error(f"[JOB {job_id}] File conversion failed: {str(e)}")
-                
-                # Fallback: Try to process as raw text if possible
-                logger.info(f"[JOB {job_id}] Attempting fallback to raw text processing")
-                
-                try:
-                    # Try different decodings
-                    text_content = None
-                    for encoding in ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1']:
-                        try:
-                            text_content = file_content.decode(encoding)
-                            logger.info(f"[JOB {job_id}] Successfully decoded with {encoding}")
-                            break
-                        except UnicodeDecodeError:
-                            continue
-                    
-                    if text_content:
-                        # Process as raw unstructured text
-                        logger.info(f"[JOB {job_id}] Processing as unstructured text")
-                        analysis_results = await analyze_raw_data_chunks(AZURE_CLIENT, text_content)
+                    # Validate it's actually CSV
+                    if not raw_content or (',' in raw_content and '\n' in raw_content):
+                        csv_content = raw_content if raw_content else file_content.decode('utf-8', errors='ignore')
+                        analysis_results = await process_csv_data(AZURE_CLIENT, csv_content, source)
+                        processing_method = "csv_direct"
                     else:
-                        # Binary file that couldn't be converted or decoded
-                        raise HTTPException(
-                            status_code=422,
-                            detail=f"Unable to process {file_ext} file. The file could not be converted to a readable format. Please try converting to CSV or Excel format first."
-                        )
+                        logger.warning(f"[JOB {job_id}] File has .csv extension but doesn't look like CSV")
+                        file_ext = '.txt'  # Treat as text
                         
-                except Exception as fallback_error:
-                    logger.error(f"[JOB {job_id}] Fallback processing failed: {str(fallback_error)}")
-                    raise HTTPException(
-                        status_code=422,
-                        detail=f"Unable to process file. Error: {str(fallback_error)}"
-                    )
+                # Check if results are valid (only in auto mode)
+                if mode == "auto" and analysis_results and not sanity_check_analysis_results(analysis_results):
+                    logger.warning(f"[JOB {job_id}] Direct processing produced poor results, will use fallback")
+                    use_fallback = True
+                    
+            except Exception as e:
+                logger.error(f"[JOB {job_id}] Direct processing failed: {str(e)}")
+                analysis_results = None
         
-        # Format the results with existing logic
-        logger.info(f"[JOB {job_id}] Formatting final analysis results (return_raw_feedback={return_raw_feedback})")
+        # STEP 2: Convert other files to CSV (skip in csv mode for non-CSV files)
+        if not analysis_results or file_ext not in ['.csv', '.xlsx', '.xls', '.xlsm']:
+            if mode == "csv":
+                # In CSV mode, only process actual CSV/Excel files
+                logger.info(f"[JOB {job_id}] CSV mode: Skipping non-CSV/Excel file")
+                raise ValueError(f"CSV mode only supports CSV and Excel files, got {file_ext}")
+            
+            logger.info(f"[JOB {job_id}] Converting {file_ext} to CSV via API")
+            
+            # Build extraction prompt
+            if not extraction_prompt:
+                if file_ext in ['.txt', '.text', '.log', '.md', '']:
+                    extraction_prompt = f'''
+Extract customer feedback from this text file into CSV format.
+
+CRITICAL INSTRUCTIONS:
+1. Each distinct feedback item should be a separate row
+2. Look for natural separators (line breaks, dates, names, numbers)
+3. Extract VERBATIM - do not summarize or modify
+4. If no clear pattern, treat paragraphs as separate feedback
+
+OUTPUT COLUMNS (use EXACTLY these names):
+- user: Customer name or "Customer 1", "Customer 2" etc
+- review_text: The complete, unmodified feedback text
+- date: Date if found (YYYY-MM-DD format), else "N/A"
+- source: "{source or 'Text File'}"
+- star_rating: Rating if found (1-5), else "N/A"
+
+IMPORTANT: Extract ALL text that could be customer feedback.'''
+                else:
+                    extraction_prompt = f'''
+Extract ALL customer feedback/reviews from this {file_ext} file.
+Structure as CSV with EXACTLY these columns: user, review_text, date, source, star_rating.
+Extract all feedback VERBATIM - do not modify or summarize.
+Use 'N/A' for any missing values.'''
+            
+            # Try conversion with retries
+            conversion_attempts = 3 if file_ext in ['.txt', '.text'] else 1
+            
+            for attempt in range(conversion_attempts):
+                try:
+                    logger.info(f"[JOB {job_id}] Conversion attempt {attempt + 1}/{conversion_attempts}")
+                    
+                    # Adjust prompt for retries
+                    if attempt > 0:
+                        extraction_prompt = "Extract to CSV format. Each line/paragraph is a feedback row. Columns: user,review_text,date,source,star_rating"
+                    
+                    csv_content = await convert_file_to_csv(
+                        file_content=file_content,
+                        filename=file.filename,
+                        prompt=extraction_prompt,
+                        mode="extract"
+                    )
+                    
+                    if csv_content and csv_content.strip():
+                        # Map API columns to our format
+                        df = pd.read_csv(StringIO(csv_content))
+                        if 'user' in df.columns or 'review_text' in df.columns:
+                            df = df.rename(columns={
+                                'user': 'Name',
+                                'review_text': 'Customer Feedback',
+                                'date': 'Received',
+                                'source': 'Source',
+                                'star_rating': 'Rating'
+                            })
+                            csv_content = df.to_csv(index=False)
+                        
+                        analysis_results = await process_csv_data(AZURE_CLIENT, csv_content, source or file_ext.upper())
+                        processing_method = "csv_conversion"
+                        
+                        # Check if results are valid (only in auto mode)
+                        if mode == "auto" and not sanity_check_analysis_results(analysis_results):
+                            logger.warning(f"[JOB {job_id}] Conversion produced poor results")
+                            use_fallback = True
+                        else:
+                            break  # Good results, stop retrying
+                        
+                except Exception as e:
+                    logger.error(f"[JOB {job_id}] Conversion attempt {attempt + 1} failed: {str(e)}")
+                    if attempt < conversion_attempts - 1:
+                        await asyncio.sleep(1)
+        
+        # STEP 3: Enhance insights (only in auto mode)
+        if mode == "auto" and analysis_results and not use_fallback:
+            logger.info(f"[JOB {job_id}] Auto mode: Enhancing insights with direct generation")
+            try:
+                # Ensure we have raw content
+                if not raw_content:
+                    raw_content = await extract_raw_content_from_file(file_content, file.filename)
+                
+                # Generate enhanced insights from raw content
+                enhanced_insights = await generate_insight_summary_direct(AZURE_CLIENT, raw_content)
+                
+                # Override existing insights with enhanced version
+                analysis_results["insight_summary"] = enhanced_insights
+                logger.info(f"[JOB {job_id}] Successfully enhanced insights")
+                
+            except Exception as e:
+                logger.error(f"[JOB {job_id}] Insight enhancement failed: {str(e)}")
+                # Keep original insights if enhancement fails
+        
+        # STEP 4: Use complete fallback if needed (only in auto mode)
+        if mode == "auto" and (not analysis_results or use_fallback):
+            logger.warning(f"[JOB {job_id}] Auto mode: Using complete analysis generation fallback")
+            
+            # Ensure we have raw content
+            if not raw_content:
+                raw_content = await extract_raw_content_from_file(file_content, file.filename)
+            
+            complete_analysis = await generate_complete_analysis_via_completions(
+                AZURE_CLIENT,
+                raw_content,
+                source,
+                return_raw_feedback
+            )
+            
+            # Return directly with metadata
+            complete_analysis["metadata"] = {
+                "job_id": job_id,
+                "original_filename": file.filename,
+                "file_size_kb": round(file_size / 1024, 2),
+                "processing_time_seconds": round(time.time() - start_time, 2),
+                "file_type": file_ext,
+                "source": source,
+                "processing_method": "complete_generation_fallback",
+                "mode": mode
+            }
+            
+            total_items = complete_analysis.get("summary", {}).get("total_feedback_items", 0)
+            total_areas = complete_analysis.get("summary", {}).get("total_key_areas", 0)
+            logger.info(f"[JOB {job_id}] Complete (auto fallback): {total_areas} areas, {total_items} items")
+            
+            return JSONResponse(content=complete_analysis, status_code=200)
+        
+        # STEP 5: Format results for normal flow
+        if not analysis_results:
+            raise ValueError(f"No analysis results generated in {mode} mode")
+            
+        logger.info(f"[JOB {job_id}] Formatting results (method: {processing_method})")
         formatted_results = await format_analysis_results(analysis_results, return_raw_feedback)
         
-        # Add processing metadata
+        # Add metadata
         formatted_results["metadata"] = {
             "job_id": job_id,
             "original_filename": file.filename,
@@ -3462,43 +4221,66 @@ async def analyze_feedback(
             "processing_time_seconds": round(time.time() - start_time, 2),
             "file_type": file_ext,
             "source": source,
-            "converted_via_api": file_ext not in SUPPORTED_DIRECT_FORMATS
+            "processing_method": processing_method,
+            "insights_enhanced": mode == "auto",  # Only true in auto mode
+            "mode": mode
         }
         
-        # Log summary statistics
-        areas_count = len(formatted_results.get("analysis_results", []))
+        # Log summary
         total_items = formatted_results.get("summary", {}).get("total_feedback_items", 0)
+        total_areas = formatted_results.get("summary", {}).get("total_key_areas", 0)
+        logger.info(f"[JOB {job_id}] Complete: {total_areas} areas, {total_items} items, {processing_method}, mode={mode}")
         
-        # Log the detected key areas and their counts
-        logger.info(f"[JOB {job_id}] ANALYSIS SUMMARY: {areas_count} key areas, {total_items} total feedback items")
-        for area in formatted_results.get("analysis_results", [])[:5]:  # Log top 5
-            logger.info(f"[JOB {job_id}] - {area['key_area']}: {area['number_of_users']} feedback items")
-        
-        elapsed_time = time.time() - start_time
-        logger.info(f"[JOB {job_id}] Analysis completed in {elapsed_time:.2f} seconds")
-        
-        return JSONResponse(
-            content=formatted_results,
-            status_code=200
-        )
+        return JSONResponse(content=formatted_results, status_code=200)
         
     except HTTPException:
-        # Re-raise HTTP exceptions as-is
         raise
         
     except Exception as e:
-        logger.error(f"[JOB {job_id}] Unexpected error: {str(e)}\n{traceback.format_exc()}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error analyzing feedback: {str(e)}"
-        )
+        logger.error(f"[JOB {job_id}] Critical error: {str(e)}\n{traceback.format_exc()}")
+        
+        # Emergency fallback response
+        try:
+            # For completions and auto mode, try to generate insights
+            if mode in ["auto", "completions"] and 'raw_content' in locals() and raw_content:
+                insights = await generate_insight_summary_direct(AZURE_CLIENT, raw_content)
+            else:
+                insights = {
+                    "user_loves": "Unable to analyze due to critical error",
+                    "feature_request": "Unable to analyze due to critical error",
+                    "pain_point": f"System error: {str(e)[:100]}",
+                    "overall_summary": "Analysis failed. Please try again or contact support."
+                }
+            
+            # Return minimal valid structure
+            return JSONResponse(
+                content={
+                    "analysis_results": [{
+                        "key_area": "System Error",
+                        "customer_problem": "Analysis could not be completed",
+                        "number_of_users": 0,
+                        "type": "issue"
+                    }],
+                    "summary": {"total_feedback_items": 0, "total_key_areas": 1},
+                    "insight_summary": insights,
+                    "metadata": {
+                        "job_id": job_id,
+                        "error": str(e),
+                        "processing_time_seconds": round(time.time() - start_time, 2) if 'start_time' in locals() else 0,
+                        "mode": mode if 'mode' in locals() else "unknown"
+                    }
+                },
+                status_code=200
+            )
+        except:
+            raise HTTPException(status_code=500, detail=f"Critical error: {str(e)}")
 @app.post("/classify-single-review")
 async def classify_single_review(
     request: Request = None,
     review: str = Form(None),
     existing_json: str = Form(None)
 ) -> JSONResponse:
-    """
+    '''
     Classifies a single review into existing categories and returns the area_type.
     Accepts both JSON body and form data.
     
@@ -3509,7 +4291,7 @@ async def classify_single_review(
         
     Returns:
         JSONResponse with classification result containing key_area, customer_problem, sentiment_score, and area_type
-    """
+    '''
     try:
         # Handle both form data and JSON body
         if review is not None:
@@ -3548,7 +4330,7 @@ async def classify_single_review(
                 for i, cat in enumerate(existing_categories)
             ])
             
-            prompt = f"""
+            prompt = f'''
             Classify this customer review into one of the existing categories below.
             
             CUSTOMER REVIEW:
@@ -3581,7 +4363,7 @@ async def classify_single_review(
                 "sentiment_score": -0.8,
                 "area_type": "issue"
             }}
-            """
+            '''
             
             # Try with embeddings first for better matching
             try:
@@ -3700,7 +4482,7 @@ async def classify_single_review(
 
 
 def infer_area_type(review_text: str, customer_problem: str) -> str:
-    """
+    '''
     Infers whether a review is a feature request or an issue based on text analysis.
     
     Args:
@@ -3709,7 +4491,7 @@ def infer_area_type(review_text: str, customer_problem: str) -> str:
         
     Returns:
         "feature" or "issue"
-    """
+    '''
     feature_keywords = [
         "want", "need", "request", "add", "feature", "enhance", "improve",
         "would like", "wish", "suggest", "should have", "could have",
@@ -3737,7 +4519,7 @@ def infer_area_type(review_text: str, customer_problem: str) -> str:
 
 
 def extract_classification_from_text(text: str, existing_categories: List[Dict[str, str]], original_json: str = "[]") -> Dict[str, str]:
-    """
+    '''
     Fallback method to extract key_area, customer_problem, sentiment_score, and area_type from GPT response when JSON parsing fails.
     
     Args:
@@ -3747,7 +4529,7 @@ def extract_classification_from_text(text: str, existing_categories: List[Dict[s
         
     Returns:
         Dictionary with key_area, customer_problem, sentiment_score, and area_type
-    """
+    '''
     # If no text provided, try to extract from original JSON or use default
     if not text or not text.strip():
         logger.warning("Empty response from GPT, attempting to use original data")
@@ -4038,7 +4820,7 @@ def extract_classification_from_text(text: str, existing_categories: List[Dict[s
         
 @app.get("/", response_class=HTMLResponse)
 async def serve_webpage():
-    """Serve the AI Assistant Hub webpage"""
+    '''Serve the AI Assistant Hub webpage'''
     try:
         with open("webpage.html", "r", encoding="utf-8") as f:
             html_content = f.read()
@@ -4058,7 +4840,7 @@ async def serve_webpage():
 # Optional: Add a favicon endpoint
 @app.get("/favicon.ico")
 async def favicon():
-    """Return a simple favicon"""
+    '''Return a simple favicon'''
     return Response(content="", media_type="image/x-icon")
 # Main function for running as standalone server
 if __name__ == "__main__":
