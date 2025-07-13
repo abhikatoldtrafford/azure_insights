@@ -4178,7 +4178,7 @@ async def analyze_feedback(
     return_raw_feedback: bool = Form(False),
     source: str = Form(None),
     extraction_prompt: str = Form(None),
-    mode: str = Form("completions")  # NEW: Processing mode - 'auto', 'csv', 'completions'
+    mode: str = Form("auto")  # NEW: Processing mode - 'auto', 'csv', 'completions'
 ) -> JSONResponse:
     '''
     Analyzes customer feedback from any uploaded file type.
