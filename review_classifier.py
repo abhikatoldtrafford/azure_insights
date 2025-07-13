@@ -338,111 +338,228 @@ async def generate_insight_summary_direct(
             content = content[:max_chars]
         
         prompt = f'''
-You are an EXPERT customer feedback analyst with 20+ years of experience in product management and customer research. Your specialty is uncovering hidden patterns, critical issues, and actionable insights that others might miss.
+You are an expert customer feedback analyst. Your task is to analyze content and return EXACTLY the JSON structure shown below.
 
-Your task is to perform a DEEP, CRITICAL analysis of customer feedback data. Be thorough, be skeptical, and dig beneath the surface. Do NOT accept things at face value. BE RESOURCEFUL - extract insights even from limited or vague feedback.
+⚠️ CRITICAL: The UI will BREAK if you don't follow this EXACT structure. Every key must be spelled correctly. Every field must be present.
 
-CRITICAL ANALYSIS REQUIREMENTS:
-1. **Be Brutally Honest**: Don't sugarcoat problems or exaggerate positives
-2. **Find Root Causes**: Don't just identify symptoms - dig deeper to find WHY issues exist
-3. **Identify Patterns**: Look for recurring themes across multiple feedback items
-4. **Prioritize by Impact**: Focus on issues that affect the most users or cause the most frustration
-5. **Be Specific**: Use exact quotes, specific features, and concrete examples from the feedback
-6. **Avoid Generic Statements**: Never use vague phrases like "various issues" or "some problems"
-7. **BE RESOURCEFUL**: Even with vague feedback, extract whatever patterns and insights you can find
-8. **NEVER HALLUCINATE**: Base EVERYTHING on the actual feedback provided - if you're not sure, say so
+INPUT CONTENT:
+{raw_content}
 
-CUSTOMER FEEDBACK DATA:
-{content}
+🔴 CRITICAL RULES FOR FEEDBACK EXTRACTION:
+1. You MUST extract and categorize EVERY SINGLE customer feedback/review found in the content
+2. Each feedback MUST be an EXACT QUOTE from the input content - DO NOT paraphrase, summarize, or modify
+3. DO NOT create fake reviews or examples - only use what's actually in the content
+4. Every feedback that mentions an issue, problem, or feature request MUST be included
+5. Even positive reviews should be categorized if they mention specific features or aspects
+6. The "Customer Feedback" field must contain the EXACT text as it appears in the input
+7. number_of_users for each area = the count of raw_feedbacks in that area
 
-### HANDLING LIMITED OR VAGUE FEEDBACK:
-Even with limited feedback, you MUST extract whatever insights are available:
-- **Vague Positives**: "It's okay", "not bad", "decent" → indicates basic satisfaction but lack of delight
-- **Vague Negatives**: "could be better", "not great", "meh" → indicates unmet expectations
-- **Repeated Vague Terms**: Multiple mentions of "slow", "confusing", "broken" → real issues exist even without specifics
-- **Emotional Indicators**: "frustrated", "annoyed", "love", "hate" → strong feelings about specific aspects
-- **Implicit Requests**: "I wish...", "hopefully someday...", "almost perfect" → hidden feature requests
-- **Question Patterns**: "How do I...?", "Where is...?", "Why can't I...?" → usability issues
+YOU MUST RETURN THIS EXACT STRUCTURE (copy the keys exactly):
 
-Perform your analysis following these specific guidelines:
-
-### 1. USER_LOVES Analysis
-Identify what users GENUINELY love - not just tolerate or find "okay":
-- What specific features generate enthusiasm and delight?
-- What do users explicitly praise or recommend to others?
-- What keeps users coming back despite any issues?
-- Look for emotional language indicating true satisfaction
-- If users don't clearly love anything, be honest about it
-
-### 2. FEATURE_REQUEST Analysis
-Identify the most critical missing features or enhancements:
-- What features do multiple users request?
-- What functionality gaps cause users to consider alternatives?
-- What would transform the product from good to great?
-- Look for phrases like "I wish", "It would be great if", "Missing", "Needs"
-- Prioritize requests that would solve real user problems
-
-### 3. PAIN_POINT Analysis (BE EXTRA CRITICAL HERE)
-Uncover the REAL problems that frustrate users:
-- What causes users to abandon the product?
-- What generates the most negative emotion?
-- What bugs, crashes, or errors are mentioned?
-- What workflow inefficiencies waste user time?
-- What confuses or misleads users?
-- Look for strong negative language, complaints, and frustration indicators
-- Consider both frequency and severity of issues
-
-### 4. OVERALL_SUMMARY Analysis
-Provide a balanced, insightful 50-80 word synthesis that:
-- Captures the TRUE sentiment balance (not just positive spin)
-- Identifies the most critical insights for product improvement
-- Highlights any concerning trends or patterns
-- Gives actionable direction for the product team
-- Reflects the actual ratio of positive to negative feedback
-
-EXAMPLE RESPONSES (showing different scenarios):
-
-EXAMPLE 1 - Mixed Feedback with Critical Issues:
 {{
-    "user_loves": "Users genuinely appreciate the auto-save feature that has prevented data loss for 73% of reviewers, and the keyboard shortcuts that power users specifically mention save them 2-3 hours weekly.",
-    "feature_request": "87% of users desperately need offline mode, with 12 users threatening to switch to competitors. Integration with Slack and real-time collaboration features are the second most requested, mentioned by 45% of reviewers.",
-    "pain_point": "Critical bug: app crashes during image uploads larger than 2MB affecting 68% of users, causing data loss. Performance degrades severely with 50+ items, making the app 'unusable' according to 34 reviews. Login failures spike every Tuesday.",
-    "overall_summary": "While core features are appreciated, critical stability issues overshadow positives. The image upload crash bug alone has caused 68% of users significant frustration. Without addressing the performance issues and adding offline mode, user churn will likely accelerate based on explicit switching threats in reviews."
+    "analysis_results": [
+        {{
+            "key_area": "string - 2-4 words describing the area",
+            "customer_problem": "string - one clear sentence describing the issue/request",
+            "number_of_users": integer - MUST equal the count of raw_feedbacks below,
+            "type": "string - MUST be exactly 'feature' or 'issue' (lowercase)",
+            "raw_feedbacks": [
+                {{
+                    "Received": "string - date in YYYY-MM-DD format or exactly 'N/A'",
+                    "Source": "string - source or exactly '{source or 'N/A'}'",
+                    "Customer Feedback": "string - EXACT quote from input content",
+                    "Name": "string - customer name or exactly 'N/A'",
+                    "sentiment_score": float - number between -1.0 and 1.0
+                }}
+                // EVERY feedback related to this area MUST be included here
+            ]
+        }}
+    ],
+    "summary": {{
+        "total_feedback_items": integer - sum of all number_of_users,
+        "total_key_areas": integer - count of items in analysis_results
+    }},
+    "insight_summary": {{
+        "user_loves": "string - what users genuinely appreciate",
+        "feature_request": "string - most requested features",
+        "pain_point": "string - biggest problems",
+        "overall_summary": "string - 50-80 word balanced summary"
+    }}
 }}
 
-EXAMPLE 2 - Predominantly Negative Feedback:
+🔴 CRITICAL RULES:
+1. EVERY key must be EXACTLY as shown above (case-sensitive)
+2. "type" MUST be exactly "feature" or "issue" (lowercase, no variations)
+3. Include ALL feedback items found in the content - DO NOT skip any
+4. Every raw_feedback item MUST have ALL 5 fields: Received, Source, Customer Feedback, Name, sentiment_score
+5. Use EXACTLY "N/A" (not "n/a", "NA", "Unknown", etc.) for missing values
+6. sentiment_score MUST be a float between -1.0 and 1.0
+7. number_of_users MUST equal the count of raw_feedbacks for that area
+8. total_feedback_items MUST equal the sum of all number_of_users
+9. total_key_areas MUST equal the count of analysis_results items
+10. "Customer Feedback" MUST be an EXACT QUOTE - no paraphrasing allowed
+
+📋 CLASSIFICATION RULES:
+- "feature" = requests for new functionality, enhancements, "I wish", "want", "need", "add"
+- "issue" = problems, bugs, errors, complaints, "broken", "slow", "crash", "doesn't work"
+
+📊 SENTIMENT SCORING:
+- -1.0 to -0.7: Extremely negative (hate, terrible, worst)
+- -0.6 to -0.3: Negative (frustrated, disappointed)
+- -0.2 to 0.2: Neutral (okay, fine, average)
+- 0.3 to 0.6: Positive (good, like, helpful)
+- 0.7 to 1.0: Very positive (love, excellent, amazing)
+
+📌 EXAMPLE 1 - SHOWING HOW TO INCLUDE ALL FEEDBACKS:
+Input content contains:
+"The app crashes when uploading photos - John"
+"Photo upload is broken, lost my work! - Sarah" 
+"Crashes on photo upload every time - Mike"
+"Please add offline mode - Alex"
+"Need offline access urgently - Pat"
+
+Result:
 {{
-    "user_loves": "Only 3 users mentioned anything positive, specifically praising the color scheme and initial setup wizard. Insufficient positive feedback to identify genuinely loved features.",
-    "feature_request": "Users want basic functionality that should already exist: undo/redo (mentioned 43 times), search function (38 times), and data export (35 times). These aren't enhancements - they're table stakes features.",
-    "pain_point": "Catastrophic data sync failures have caused 23 users to lose weeks of work. The app freezes for 30+ seconds when switching views (mentioned in 89% of reviews). Customer support is non-existent with average response time of 3 weeks.",
-    "overall_summary": "Product is fundamentally broken with 92% negative sentiment. Data loss bugs and missing basic features make this barely functional. Users are actively warning others not to purchase. Requires immediate critical bug fixes and feature parity with competitors before focusing on any enhancements."
+    "analysis_results": [
+        {{
+            "key_area": "Photo Upload",
+            "customer_problem": "App crashes consistently during photo upload causing data loss",
+            "number_of_users": 3,
+            "type": "issue",
+            "raw_feedbacks": [
+                {{
+                    "Received": "N/A",
+                    "Source": "N/A",
+                    "Customer Feedback": "The app crashes when uploading photos",
+                    "Name": "John",
+                    "sentiment_score": -0.7
+                }},
+                {{
+                    "Received": "N/A",
+                    "Source": "N/A",
+                    "Customer Feedback": "Photo upload is broken, lost my work!",
+                    "Name": "Sarah",
+                    "sentiment_score": -0.9
+                }},
+                {{
+                    "Received": "N/A",
+                    "Source": "N/A",
+                    "Customer Feedback": "Crashes on photo upload every time",
+                    "Name": "Mike",
+                    "sentiment_score": -0.8
+                }}
+            ]
+        }},
+        {{
+            "key_area": "Offline Mode",
+            "customer_problem": "Users need ability to work without internet connection",
+            "number_of_users": 2,
+            "type": "feature",
+            "raw_feedbacks": [
+                {{
+                    "Received": "N/A",
+                    "Source": "N/A",
+                    "Customer Feedback": "Please add offline mode",
+                    "Name": "Alex",
+                    "sentiment_score": -0.2
+                }},
+                {{
+                    "Received": "N/A",
+                    "Source": "N/A",
+                    "Customer Feedback": "Need offline access urgently",
+                    "Name": "Pat",
+                    "sentiment_score": -0.4
+                }}
+            ]
+        }}
+    ],
+    "summary": {{
+        "total_feedback_items": 5,
+        "total_key_areas": 2
+    }},
+    "insight_summary": {{
+        "user_loves": "No positive aspects mentioned in the feedback",
+        "feature_request": "Offline mode is urgently needed by users",
+        "pain_point": "Photo upload crashes are causing data loss for all users who try to upload",
+        "overall_summary": "Critical stability issues with photo upload are frustrating users and causing data loss. Offline mode is also a pressing need. These issues require immediate attention."
+    }}
 }}
 
-EXAMPLE 3 - Limited/Vague Feedback (STILL EXTRACT WHAT YOU CAN):
+📌 EXAMPLE 2 - COMPLEX FEEDBACK WITH DATES AND SOURCES:
 {{
-    "user_loves": "Among the limited feedback, 3 users mentioned the interface is 'clean' and 2 specifically said setup was 'easy'. One user wrote 'finally something that just works' suggesting reliability is appreciated, though specifics weren't provided.",
-    "feature_request": "While not explicitly stated as requests, 4 users mentioned 'wish it did more' and 2 asked 'can it connect to [other tool]?' suggesting integration capabilities and expanded functionality are desired. One review ended with 'almost perfect' implying missing features.",
-    "pain_point": "5 reviews mentioned 'sometimes slow' without specifying when/where. 3 users said 'could be better' particularly around 'finding things'. One frustrated user wrote 'why is this so hard?' but didn't specify what 'this' refers to - likely a workflow issue.",
-    "overall_summary": "Despite vague feedback, patterns emerge: users appreciate the clean interface and reliability but experience performance issues and navigation difficulties. The repeated mentions of wanting 'more' suggest the core product works but lacks depth. Even limited feedback reveals need for performance optimization and feature expansion."
+    "analysis_results": [
+        {{
+            "key_area": "Login Issues",
+            "customer_problem": "Users unable to login due to authentication errors and password reset failures",
+            "number_of_users": 4,
+            "type": "issue",
+            "raw_feedbacks": [
+                {{
+                    "Received": "2024-01-15",
+                    "Source": "App Store",
+                    "Customer Feedback": "Can't login anymore after update. Password reset doesn't work either.",
+                    "Name": "user123",
+                    "sentiment_score": -0.8
+                }},
+                {{
+                    "Received": "2024-01-15",
+                    "Source": "Support Email",
+                    "Customer Feedback": "Login broken for 3 days now. This is unacceptable for a paid service!",
+                    "Name": "J. Smith",
+                    "sentiment_score": -0.95
+                }},
+                {{
+                    "Received": "2024-01-16",
+                    "Source": "Twitter",
+                    "Customer Feedback": "@AppSupport your login is completely broken. Fix this NOW.",
+                    "Name": "@angryuser",
+                    "sentiment_score": -0.9
+                }},
+                {{
+                    "Received": "N/A",
+                    "Source": "Forum",
+                    "Customer Feedback": "Anyone else having login issues? Been locked out since yesterday",
+                    "Name": "forumUser99",
+                    "sentiment_score": -0.7
+                }}
+            ]
+        }}
+    ],
+    "summary": {{
+        "total_feedback_items": 4,
+        "total_key_areas": 1
+    }},
+    "insight_summary": {{
+        "user_loves": "No positive feedback found in the provided content",
+        "feature_request": "No feature requests identified in the feedback",
+        "pain_point": "Critical authentication system failure preventing users from accessing the service",
+        "overall_summary": "A severe login system failure is completely blocking user access, causing extreme frustration among paying customers. This requires emergency resolution."
+    }}
 }}
 
-CRITICAL REMINDERS:
-- Count and cite specific numbers when multiple users mention the same thing
-- Use actual quotes from reviews when they illustrate key points
-- If feedback is overwhelmingly negative, reflect that honestly
-- ALWAYS try to extract SOMETHING meaningful, even from vague feedback:
-  * Look for repeated words or phrases even if vague ("slow", "better", "more")
-  * Note emotional indicators even without specifics ("frustrated", "happy", "disappointed")
-  * Identify patterns in what's NOT being said (no mentions of price = likely not an issue)
-  * Extract any hints or implications ("almost perfect" = something is missing)
-  * Use frequency of vague complaints as a signal ("5 mentions of 'slow' = performance issue")
-- Only say "unable to identify" when there is LITERALLY nothing to work with
-- Look for hidden issues between the lines (e.g., workarounds users describe)
-- Consider what users DON'T say (missing expected positive feedback can be telling)
-- Flag any contradictions in the feedback
-- Note any patterns in user types, use cases, or contexts
+🔄 PROCESSING STEPS:
+1. Read through the ENTIRE input content
+2. Identify EVERY piece of customer feedback (look for complaints, requests, reviews, comments)
+3. Quote each feedback EXACTLY as written - no modifications
+4. Group similar feedback into logical areas (3-8 areas typically)
+5. Count the exact number of feedbacks per area
+6. Classify each area as "feature" or "issue"
+7. Calculate appropriate sentiment scores
+8. Generate insights based on ALL the feedback
 
-RESPOND ONLY WITH VALID JSON. Be critical, be thorough, be honest.'''
+⚠️ FINAL REMINDERS:
+- Extract EVERY feedback item - do not skip or sample
+- Customer Feedback must be EXACT QUOTES from the input
+- NEVER create fake or example reviews
+- number_of_users MUST match the actual count of raw_feedbacks
+- If you find 50 reviews about login issues, include ALL 50 in raw_feedbacks
+- If limited feedback exists, create fewer areas (minimum 1)
+- Every analysis_results item MUST have ALL required fields
+- Every raw_feedback MUST have EXACTLY these 5 fields: Received, Source, Customer Feedback, Name, sentiment_score
+- Use EXACTLY "N/A" for missing values
+- Ensure all keys are spelled EXACTLY as shown
+
+RESPOND WITH VALID JSON ONLY. The UI depends on this exact structure.'''
         
         # Retry logic
         max_retries = 3
