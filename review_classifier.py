@@ -4456,16 +4456,19 @@ async def classify_single_review(
     existing_json: str = Form(None)
 ) -> JSONResponse:
     '''
-    Classifies a single review into existing categories and returns the area_type.
-    Accepts both JSON body and form data.
+    Classifies a single piece of text (review, email, meeting notes, etc.) into multiple categories.
     
     Args:
         request: FastAPI request object containing JSON
-        review: Review text (when using form data)
-        existing_json: Existing categories (when using form data)
+        review: Text to classify (when using form data)
+        existing_json: Existing categories to consider (when using form data)
         
     Returns:
-        JSONResponse with classification result containing key_area, customer_problem, sentiment_score, and area_type
+        JSONResponse with array of classifications, each containing:
+        - key_area: Category name (2-4 words)
+        - customer_problem: Specific problem/request description
+        - sentiment_score: Float between -1.0 and 1.0
+        - area_type: Either "feature" or "issue"
     '''
     try:
         # Handle both form data and JSON body
@@ -4486,174 +4489,346 @@ async def classify_single_review(
                 raise HTTPException(status_code=400, detail=f"Invalid request body: {str(e)}")
         
         if not review_text:
-            raise HTTPException(status_code=400, detail="Review text is required")
+            raise HTTPException(status_code=400, detail="Text input is required")
         
-        logger.info(f"Classifying single review: {review_text[:100]}...")
+        logger.info(f"Classifying text into multiple categories: {review_text[:100]}...")
         
-        # If no existing categories, create a default set
-        if not existing_categories:
-            logger.info("No existing categories provided, using default categories")
-            existing_categories = [
-                {"key_area": "General Issues", "customer_problem": "Various customer problems and feedback"},
-                {"key_area": "Feature Requests", "customer_problem": "Customer feature requests and enhancements"}
-            ]
+        # Format existing categories for the prompt
+        existing_categories_text = ""
+        if existing_categories:
+            existing_categories_text = "\nEXISTING CATEGORIES TO CONSIDER:\n" + "\n".join([
+                f"- {cat.get('key_area', 'Unknown')} ({cat.get('area_type', 'issue')}): {cat.get('customer_problem', 'No description')}"
+                for cat in existing_categories
+            ]) + "\n\nTry to use these existing categories when the content matches, but create new specific categories for anything that doesn't fit."
         
+        # Create a comprehensive prompt for multi-classification
+        prompt = f'''
+You are an expert at analyzing ANY type of text - customer reviews, meeting notes, transcripts, conversations, emails, chat logs, support tickets, or even casual discussions between people - and extracting ALL distinct problems, issues, complaints, feature requests, or suggestions mentioned.
+
+INPUT TEXT TO ANALYZE:
+"{review_text}"
+{existing_categories_text}
+
+CRITICAL INSTRUCTIONS:
+1. The input could be ANYTHING: formal feedback, casual conversation between colleagues, meeting transcript, customer support chat, internal discussion, etc.
+2. Extract problems/requests even if mentioned indirectly (e.g., "John was saying the dashboard is too slow" → dashboard performance issue)
+3. Consolidate related items into broader categories when possible - aim for 2-5 key areas unless the text genuinely contains more distinct topics
+4. If you find 10 small issues about the UI, group them as "UI/UX Issues" with a comprehensive problem description
+5. Classify each as either "feature" (requests/suggestions/enhancements) or "issue" (problems/complaints/bugs)
+6. Calculate sentiment based on how each topic is discussed
+
+IMPORTANT: Try to keep total key_areas to 5 or fewer by intelligently grouping related items. Only exceed 5 if there are truly distinct, unrelated categories that cannot be merged.
+
+CLASSIFICATION RULES:
+- "feature" = requests, suggestions, enhancements, improvements, "wish", "want", "need", "should have", "would be nice"
+- "issue" = problems, bugs, complaints, difficulties, frustrations, "broken", "doesn't work", "confusing", "slow", "failing"
+
+SENTIMENT SCORING:
+- -1.0 to -0.7: Extremely negative (terrible, awful, hate, worst, critical failure)
+- -0.6 to -0.3: Negative (frustrated, disappointed, annoying, problematic)
+- -0.2 to 0.2: Neutral (factual, mixed feelings, matter-of-fact)
+- 0.3 to 0.6: Positive (good, helpful, useful, appreciate)
+- 0.7 to 1.0: Very positive (love, excellent, amazing, fantastic)
+
+YOUR RESPONSE MUST BE A JSON ARRAY OF OBJECTS, each with these exact fields:
+[
+    {{
+        "key_area": "string - 2-4 words describing the category",
+        "customer_problem": "string - comprehensive sentence covering all related issues/requests in this category",
+        "sentiment_score": float between -1.0 and 1.0,
+        "area_type": "issue" or "feature" (lowercase only)
+    }}
+]
+
+EXAMPLE 1 - Conversation Transcript (2 key areas):
+Input: "Sarah: Hey Mike, did you see all those customer complaints about the login page? Mike: Yeah, it's a disaster. People can't reset passwords, the captcha is broken, and it times out too fast. Sarah: We really need to fix that. Also, everyone's been asking for that dark mode feature. Mike: True, and mobile notifications would be nice too."
+
+Output:
+[
+    {{
+        "key_area": "Authentication System",
+        "customer_problem": "Login page has multiple critical issues including broken password reset, malfunctioning captcha, and overly short timeout periods",
+        "sentiment_score": -0.7,
+        "area_type": "issue"
+    }},
+    {{
+        "key_area": "User Experience",
+        "customer_problem": "Users requesting dark mode theme and mobile push notification features",
+        "sentiment_score": 0.3,
+        "area_type": "feature"
+    }}
+]
+
+EXAMPLE 2 - Support Ticket (3 key areas):
+Input: "Ticket #4521: Customer reporting that batch processing is taking 4x longer than before. Also mentioned they love the new UI design but wish we had API webhooks. BTW, several other customers have reported similar performance issues with large datasets. The data visualization is also not loading properly for datasets over 10k records."
+
+Output:
+[
+    {{
+        "key_area": "Performance Issues",
+        "customer_problem": "Batch processing is 4x slower than before and system struggles with large datasets causing widespread customer impact",
+        "sentiment_score": -0.6,
+        "area_type": "issue"
+    }},
+    {{
+        "key_area": "Data Visualization",
+        "customer_problem": "Visualization feature fails to load for datasets exceeding 10,000 records",
+        "sentiment_score": -0.5,
+        "area_type": "issue"
+    }},
+    {{
+        "key_area": "API Enhancement",
+        "customer_problem": "Customers want webhook functionality added to the API for real-time integrations",
+        "sentiment_score": 0.2,
+        "area_type": "feature"
+    }}
+]
+
+EXAMPLE 3 - Meeting Notes (4 key areas):
+Input: "Q3 Planning Meeting Notes: 1) Sales team says customers hate our pricing page - too confusing, hidden fees, can't compare plans easily 2) Engineering wants to rebuild the entire backend for better scalability 3) Customer success reports that onboarding is taking too long, users dropping off during setup wizard 4) Compliance team needs GDPR features ASAP for European expansion"
+
+Output:
+[
+    {{
+        "key_area": "Pricing Transparency",
+        "customer_problem": "Pricing page is confusing with hidden fees and lacks clear plan comparison causing customer frustration",
+        "sentiment_score": -0.6,
+        "area_type": "issue"
+    }},
+    {{
+        "key_area": "Technical Infrastructure",
+        "customer_problem": "Engineering team wants to rebuild backend architecture for improved scalability",
+        "sentiment_score": 0.2,
+        "area_type": "feature"
+    }},
+    {{
+        "key_area": "User Onboarding",
+        "customer_problem": "Onboarding process is too lengthy causing users to abandon during setup wizard",
+        "sentiment_score": -0.5,
+        "area_type": "issue"
+    }},
+    {{
+        "key_area": "Compliance Features",
+        "customer_problem": "GDPR compliance features urgently needed for European market expansion",
+        "sentiment_score": 0.1,
+        "area_type": "feature"
+    }}
+]
+
+EXAMPLE 4 - Complex Feedback Email (5 key areas):
+Input: "Hey team, forwarding this from our biggest client: 'Your software has potential but needs work. The reporting module crashes daily, export function doesn't include all fields, and charts are unreadable on mobile. We desperately need SSO integration for our 500 employees, plus real-time collaboration features. The mobile app is practically unusable - buttons too small, gestures don't work, constant logouts. Your support team is great but the knowledge base is outdated. Also, we're required to have audit logs for compliance by next quarter.'"
+
+Output:
+[
+    {{
+        "key_area": "Reporting Module",
+        "customer_problem": "Reporting system crashes daily and exports are missing fields affecting data completeness",
+        "sentiment_score": -0.7,
+        "area_type": "issue"
+    }},
+    {{
+        "key_area": "Mobile Experience",
+        "customer_problem": "Mobile app has severe usability issues including unreadable charts, tiny buttons, broken gestures, and logout problems",
+        "sentiment_score": -0.8,
+        "area_type": "issue"
+    }},
+    {{
+        "key_area": "Enterprise Features",
+        "customer_problem": "Large clients need SSO integration and real-time collaboration capabilities for their teams",
+        "sentiment_score": 0.2,
+        "area_type": "feature"
+    }},
+    {{
+        "key_area": "Documentation",
+        "customer_problem": "Knowledge base documentation is outdated despite having helpful support team",
+        "sentiment_score": -0.3,
+        "area_type": "issue"
+    }},
+    {{
+        "key_area": "Compliance Tools",
+        "customer_problem": "Audit logging functionality required for regulatory compliance by next quarter",
+        "sentiment_score": 0.1,
+        "area_type": "feature"
+    }}
+]
+
+Remember:
+- Extract problems even from casual conversations or indirect mentions
+- Group related items intelligently - aim for 2-5 key areas total
+- Be comprehensive in the customer_problem description when grouping multiple related issues
+- Recognize context clues (e.g., "John mentioned..." "Customers are saying..." "The team thinks...")
+- Only output the JSON array, nothing else
+'''
+
         try:
-            # Prepare the prompt for classification
-            categories_text = "\n".join([
-                f"{i+1}. {cat.get('key_area', 'Unknown')}: {cat.get('customer_problem', 'No description')}"
-                for i, cat in enumerate(existing_categories)
-            ])
-            
-            prompt = f'''
-            Classify this customer review into one of the existing categories below.
-            
-            CUSTOMER REVIEW:
-            "{review_text}"
-            
-            EXISTING CATEGORIES:
-            {categories_text}
-            
-            Based on the review content:
-            1. Select the most appropriate category from the list above
-            2. Determine if this is a feature request or an issue/problem
-            3. Calculate a sentiment score between -1 (very negative) and 1 (very positive)
-            
-            If the review doesn't fit any existing category well, you may create a new category.
-            
-            Respond with a JSON object containing:
-            - key_area: The category name
-            - customer_problem: The specific problem description
-            - sentiment_score: A number between -1 and 1
-            - area_type: Either "feature" (for feature requests/enhancements) or "issue" (for problems/bugs)
-            
-            Rules for area_type:
-            - "feature": The review is requesting new functionality, enhancements, or improvements
-            - "issue": The review is reporting problems, bugs, errors, or complaints
-            
-            Example response:
-            {{
-                "key_area": "App Performance",
-                "customer_problem": "App crashes during photo uploads",
-                "sentiment_score": -0.8,
-                "area_type": "issue"
-            }}
-            '''
-            
-            # Try with embeddings first for better matching
-            try:
-                # Generate embedding for the review
-                review_embedding = await get_embeddings(AZURE_CLIENT, [review_text])
-                
-                # Generate embeddings for existing categories
-                category_texts = [cat.get("customer_problem", "") for cat in existing_categories]
-                category_embeddings = await get_embeddings(AZURE_CLIENT, category_texts)
-                
-                # Calculate similarities
-                review_vec = np.array(review_embedding[0])
-                category_matrix = np.array(category_embeddings)
-                
-                # Normalize vectors
-                review_vec_norm = review_vec / np.linalg.norm(review_vec)
-                category_norms = np.linalg.norm(category_matrix, axis=1, keepdims=True)
-                category_norms = np.where(category_norms == 0, 1e-10, category_norms)
-                category_matrix_norm = category_matrix / category_norms
-                
-                # Calculate similarities
-                similarities = np.dot(category_matrix_norm, review_vec_norm)
-                
-                # Find best match
-                best_idx = np.argmax(similarities)
-                best_similarity = similarities[best_idx]
-                best_category = existing_categories[best_idx]
-                
-                logger.info(f"Best matching category: {best_category.get('key_area')} (similarity: {best_similarity:.3f})")
-                
-                # If similarity is high enough, use the matched category
-                if best_similarity > 0.8:
-                    # Use the matched category but still ask GPT to refine and add area_type
-                    prompt += f"\n\nNote: Based on semantic similarity, this review seems to match the category '{best_category.get('key_area')}'. Consider this in your classification."
-                    
-            except Exception as e:
-                logger.warning(f"Embedding matching failed, using GPT only: {str(e)}")
-            
-            # Call GPT for final classification
+            # Use GPT to analyze the text
             response = AZURE_CLIENT.chat.completions.create(
                 model="gpt-4.1-mini",
                 messages=[
-                    {"role": "system", "content": "You are a customer feedback classification system that accurately categorizes reviews and identifies whether they are feature requests or issues."},
+                    {
+                        "role": "system",
+                        "content": "You are a text analysis expert. Extract ALL distinct issues and features mentioned in any text. Output only a JSON array."
+                    },
                     {"role": "user", "content": prompt}
                 ],
-                temperature=0.1,
+                temperature=0.2,
+                max_tokens=2000,
                 response_format={"type": "json_object"}
             )
             
             result_text = response.choices[0].message.content
-            logger.info(f"GPT response: {result_text[:200]}...")
             
             # Try to parse the response
             try:
+                # First try direct parsing
                 result = json.loads(result_text)
                 
-                # Ensure all required fields are present
-                if not all(key in result for key in ["key_area", "customer_problem", "sentiment_score", "area_type"]):
-                    raise ValueError("Missing required fields in response")
+                # Handle if it's wrapped in an object
+                if isinstance(result, dict):
+                    # Look for an array in the response
+                    if "classifications" in result:
+                        result = result["classifications"]
+                    elif "results" in result:
+                        result = result["results"]
+                    elif "items" in result:
+                        result = result["items"]
+                    else:
+                        # Try to find any key that contains a list
+                        for key, value in result.items():
+                            if isinstance(value, list):
+                                result = value
+                                break
+                        else:
+                            # No list found, wrap the single item
+                            result = [result]
                 
-                # Validate area_type
-                if result["area_type"] not in ["feature", "issue"]:
-                    # Try to infer from the review and problem
-                    result["area_type"] = infer_area_type(review_text, result.get("customer_problem", ""))
+                # Validate it's a list
+                if not isinstance(result, list):
+                    raise ValueError("Response is not a list")
                 
-                # Validate sentiment score
-                try:
-                    result["sentiment_score"] = float(result["sentiment_score"])
-                    result["sentiment_score"] = max(-1.0, min(1.0, result["sentiment_score"]))
-                except (ValueError, TypeError):
-                    # Calculate sentiment if invalid
-                    sentiment_scores = await calculate_sentiment_scores([review_embedding[0] if 'review_embedding' in locals() else np.random.rand(1536)], AZURE_CLIENT)
-                    result["sentiment_score"] = sentiment_scores[0]
+                # Validate and fix each item
+                validated_results = []
+                for item in result:
+                    if not isinstance(item, dict):
+                        continue
+                    
+                    # Ensure all required fields
+                    validated_item = {
+                        "key_area": item.get("key_area", "Unknown Area"),
+                        "customer_problem": item.get("customer_problem", "Unspecified problem"),
+                        "sentiment_score": 0.0,
+                        "area_type": "issue"
+                    }
+                    
+                    # Validate sentiment score
+                    try:
+                        score = float(item.get("sentiment_score", 0.0))
+                        validated_item["sentiment_score"] = max(-1.0, min(1.0, score))
+                    except:
+                        validated_item["sentiment_score"] = 0.0
+                    
+                    # Validate area_type
+                    area_type = item.get("area_type", "").lower()
+                    if area_type in ["feature", "issue"]:
+                        validated_item["area_type"] = area_type
+                    else:
+                        # Infer from problem description
+                        validated_item["area_type"] = infer_area_type(review_text, validated_item["customer_problem"])
+                    
+                    validated_results.append(validated_item)
+                
+                # If no valid results, create a fallback
+                if not validated_results:
+                    raise ValueError("No valid classifications found")
+                
+                logger.info(f"Successfully classified text into {len(validated_results)} categories")
+                return JSONResponse(content=validated_results, status_code=200)
                 
             except (json.JSONDecodeError, ValueError) as e:
-                logger.warning(f"Failed to parse GPT response as JSON: {str(e)}")
-                # Use the fallback extraction method
-                result = extract_classification_from_text(result_text, existing_categories, existing_json if existing_json else "[]")
+                logger.error(f"Failed to parse GPT response: {str(e)}")
+                logger.error(f"Raw response: {result_text[:500]}...")
+                raise
                 
-                # Add area_type if not present
-                if "area_type" not in result:
-                    result["area_type"] = infer_area_type(review_text, result.get("customer_problem", ""))
-            
-            logger.info(f"Final classification: {result}")
-            
-            return JSONResponse(content=result, status_code=200)
-            
         except Exception as e:
-            logger.error(f"Error during classification: {str(e)}")
-            # Final fallback - use first category or create generic one
-            fallback_result = {
-                "key_area": existing_categories[0].get("key_area", "General Feedback") if existing_categories else "General Feedback",
-                "customer_problem": existing_categories[0].get("customer_problem", "General customer feedback") if existing_categories else "General customer feedback",
-                "sentiment_score": 0.0,
-                "area_type": "issue"
-            }
+            logger.error(f"Error during GPT classification: {str(e)}")
             
-            # Try to at least get proper sentiment
+            # Fallback: Try to extract at least something meaningful
             try:
-                embeddings = await get_embeddings(AZURE_CLIENT, [review_text])
-                sentiment_scores = await calculate_sentiment_scores(embeddings, AZURE_CLIENT)
-                fallback_result["sentiment_score"] = sentiment_scores[0]
-            except:
-                pass
+                # Simple keyword-based classification as last resort
+                issues = []
+                features = []
+                
+                # Look for issue indicators
+                issue_keywords = ["problem", "issue", "broken", "crash", "slow", "fail", "error", "difficult", "confusing"]
+                feature_keywords = ["want", "need", "request", "add", "should", "could", "would like", "suggest"]
+                
+                text_lower = review_text.lower()
+                
+                # Check for issues
+                for keyword in issue_keywords:
+                    if keyword in text_lower:
+                        issues.append({
+                            "key_area": "General Issues",
+                            "customer_problem": f"Text mentions {keyword}-related concerns",
+                            "sentiment_score": -0.3,
+                            "area_type": "issue"
+                        })
+                        break
+                
+                # Check for features
+                for keyword in feature_keywords:
+                    if keyword in text_lower:
+                        features.append({
+                            "key_area": "Feature Requests",
+                            "customer_problem": f"Text contains {keyword}-based suggestions",
+                            "sentiment_score": 0.2,
+                            "area_type": "feature"
+                        })
+                        break
+                
+                # Combine and return
+                fallback_results = issues + features
+                
+                if not fallback_results:
+                    # Absolute fallback
+                    fallback_results = [{
+                        "key_area": "General Feedback",
+                        "customer_problem": "Unable to classify specific issues or features from the provided text",
+                        "sentiment_score": 0.0,
+                        "area_type": "issue"
+                    }]
+                
+                return JSONResponse(content=fallback_results, status_code=200)
+                
+            except Exception as fallback_error:
+                logger.error(f"Fallback classification also failed: {str(fallback_error)}")
+                
+                # Final emergency response
+                return JSONResponse(
+                    content=[{
+                        "key_area": "Classification Error",
+                        "customer_problem": "System error prevented text classification",
+                        "sentiment_score": -0.5,
+                        "area_type": "issue"
+                    }],
+                    status_code=200
+                )
             
-            # Try to infer area type
-            fallback_result["area_type"] = infer_area_type(review_text, fallback_result["customer_problem"])
-            
-            return JSONResponse(content=fallback_result, status_code=200)
-        
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Unexpected error in classify_single_review: {str(e)}\n{traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+        
+        # Return error classification
+        return JSONResponse(
+            content=[{
+                "key_area": "System Error",
+                "customer_problem": f"Classification failed: {str(e)[:100]}",
+                "sentiment_score": -0.8,
+                "area_type": "issue"
+            }],
+            status_code=200
+        )
 
 
 def infer_area_type(review_text: str, customer_problem: str) -> str:
