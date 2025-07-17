@@ -6,7 +6,7 @@ import pandas as pd
 from functools import wraps
 from typing import Dict, List, Any, Optional, Tuple, Union
 from fastapi import FastAPI, APIRouter, UploadFile, File, HTTPException, Form, Request, status
-from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.responses import JSONResponse, HTMLResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 import traceback
 import time
@@ -4696,28 +4696,52 @@ Output:
     }}
 ]
 
-EXAMPLE 6 - Project Status Email (3 key areas):
-Input: "Hi Team, Please share your status on this task. We had agreed to: Create 1 API for all AI use cases in Assistra: Super API - need status. Review Insights API: I had asked to include other inputs like ability to take free form text, .doc etc. Implementation of this Super API across all endpoints. Where are we with these?"
+EXAMPLE 7 - Strategy Discussion (7 key areas):
+Input: "Strategy is definitely what our problem is and important. Picking the right thing (we have bunch of frameworks to prioritize) which one do you invest on. You also have to have understanding of how PMs spend time on customer research. Quarterly planning still painful process. We do build the same stuff so believe repeatable issue is a pain. AI is changing lot of things on how we operate. There is not a lot of hiring going on for junior PMs."
 
 Output:
 [
     {{
-        "key_area": "Super API Creation",
-        "customer_problem": "Team needs to create unified Super API for all AI use cases in Assistra",
-        "sentiment_score": 0.0,
-        "area_type": "feature"
+        "key_area": "Strategic Direction",
+        "customer_problem": "Organization struggling with overall strategy definition and execution",
+        "sentiment_score": -0.5,
+        "area_type": "issue"
     }},
     {{
-        "key_area": "Review API Enhancement",
-        "customer_problem": "Review Insights API needs enhancement to accept additional input types including free form text and .doc files",
-        "sentiment_score": 0.0,
-        "area_type": "feature"
+        "key_area": "Prioritization Frameworks",
+        "customer_problem": "Difficulty choosing which prioritization framework to use among multiple options",
+        "sentiment_score": -0.4,
+        "area_type": "issue"
     }},
     {{
-        "key_area": "API Implementation",
-        "customer_problem": "Super API needs to be implemented across all existing endpoints",
+        "key_area": "Customer Research",
+        "customer_problem": "Need better understanding of how product managers allocate time for customer research",
+        "sentiment_score": -0.3,
+        "area_type": "issue"
+    }},
+    {{
+        "key_area": "Planning Process",
+        "customer_problem": "Quarterly planning process remains painful and inefficient",
+        "sentiment_score": -0.6,
+        "area_type": "issue"
+    }},
+    {{
+        "key_area": "Feature Duplication",
+        "customer_problem": "Teams repeatedly building the same features causing waste",
+        "sentiment_score": -0.5,
+        "area_type": "issue"
+    }},
+    {{
+        "key_area": "AI Transformation",
+        "customer_problem": "AI is changing operational processes requiring adaptation",
         "sentiment_score": 0.0,
-        "area_type": "feature"
+        "area_type": "issue"
+    }},
+    {{
+        "key_area": "Talent Acquisition",
+        "customer_problem": "Limited hiring opportunities for junior product managers",
+        "sentiment_score": -0.4,
+        "area_type": "issue"
     }}
 ]
 
