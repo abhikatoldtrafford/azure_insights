@@ -1187,7 +1187,8 @@ async def generate_summary(
     review_texts: List[str],
     classified_feedback: Dict[str, List] = None,
     key_areas: List[Dict] = None,
-    slow_mode: bool = False
+    slow_mode: bool = False,
+    skip_insights: bool = False 
 ) -> Dict[str, str]:
     '''
     Analyzes customer feedback to identify what users love, what features they request, their pain points,
@@ -1204,9 +1205,17 @@ async def generate_summary(
     Returns:
         Dictionary with user_loves, feature_request, pain_point, and overall_summary
     '''
+    
     try:
         logger.info(f"Generating summary insights from {len(review_texts)} reviews")
-        
+        if skip_insights:
+            logger.info("Skipping insights generation as skip_insights=True")
+            return {
+                "user_loves": "Insights will be generated via completions",
+                "feature_request": "Insights will be generated via completions",
+                "pain_point": "Insights will be generated via completions",
+                "overall_summary": "Insights will be generated via completions"
+            }
         # More robust check for insufficient data
         if len(review_texts) < 2:
             logger.warning(f"Insufficient reviews ({len(review_texts)}) for reliable summary generation")
@@ -1337,7 +1346,7 @@ async def generate_summary(
             
             # For small datasets, adjust threshold dynamically
             if len(texts) <= 5:
-                min_threshold = 0.1  # Lower threshold for small datasets
+                min_threshold = 0.2  # Lower threshold for small datasets
             
             # Get indices of reviews with scores above threshold
             valid_indices = np.where(scores > min_threshold)[0]
@@ -1987,7 +1996,8 @@ async def process_excel_data(
     client: AzureOpenAI, 
     file_content: bytes,
     filename: str,
-    source: str = None
+    source: str = None,
+    skip_insights: bool = False
 ) -> Dict[str, Any]:
     '''
     Process Excel file data to extract and classify feedback from all sheets.
@@ -2178,7 +2188,8 @@ async def process_excel_data(
                 all_feedback_embeddings, 
                 feedback_texts,
                 preliminary_classified,  # Pass preliminary classification
-                key_areas  # Pass key areas with area_type
+                key_areas,  # Pass key areas with area_type
+                skip_insights=skip_insights
             )
             
             # Calculate sentiment scores using the same embeddings we already generated
@@ -2197,16 +2208,16 @@ async def process_excel_data(
                     
                     # Apply weighting based on type match
                     if feedback_type == area_type:
-                        similarity_matrix[i, j] *= 1.3  # Boost similarity for matching types
+                        similarity_matrix[i, j] *= 1.2  # Boost similarity for matching types
                     else:
-                        similarity_matrix[i, j] *= 0.7  # Reduce similarity for mismatched types
+                        similarity_matrix[i, j] *= 0.8  # Reduce similarity for mismatched types
             
             # Classify feedback based on similarity
             # Adjust similarity threshold based on dataset size
             if len(all_feedback_items) <= 5:
-                similarity_threshold = 0.5  # Lower threshold for small datasets
+                similarity_threshold = 0.65  # Lower threshold for small datasets
             else:
-                similarity_threshold = 0.7
+                similarity_threshold = 0.8
             
             for i, similarities in enumerate(similarity_matrix):
                 # Get indices where similarity exceeds threshold
@@ -2231,10 +2242,10 @@ async def process_excel_data(
             
             # Fallback for insight summary if embeddings failed
             insight_summary = {
-                "user_loves": "Unable to determine what users love due to an error in embeddings processing",
-                "feature_request": "Unable to identify feature requests due to an error in embeddings processing",
-                "pain_point": "Unable to identify pain points due to an error in embeddings processing",
-                "overall_summary": "Unable to generate an overall summary due to an error"
+                "user_loves": "Insights will be generated via completions" if skip_insights else "Unable to determine what users love due to an error in embeddings processing",
+                "feature_request": "Insights will be generated via completions" if skip_insights else "Unable to identify feature requests due to an error in embeddings processing",
+                "pain_point": "Insights will be generated via completions" if skip_insights else "Unable to identify pain points due to an error in embeddings processing",
+                "overall_summary": "Insights will be generated via completions" if skip_insights else "Unable to generate an overall summary due to an error"
             }
             
             # Fall back to chunked classification via OpenAI
@@ -2380,7 +2391,7 @@ async def process_excel_data(
             os.unlink(temp_path)
             
             logger.info("Falling back to CSV processing for Excel data")
-            return await process_csv_data(AZURE_CLIENT, csv_data, source)
+            return await process_csv_data(AZURE_CLIENT, csv_data, source, skip_insights=skip_insights)
         except Exception as fallback_error:
             logger.error(f"Excel fallback also failed: {str(fallback_error)}")
             # Final fallback - raw data
@@ -3476,12 +3487,12 @@ async def analyze_raw_data_chunks(
                 
                 # Apply weighting based on type match
                 if feedback_type == area_type:
-                    similarity_matrix[i, j] *= 1.3  # Boost similarity for matching types
+                    similarity_matrix[i, j] *= 1.2  # Boost similarity for matching types
                 else:
-                    similarity_matrix[i, j] *= 0.7  # Reduce similarity for mismatched types
+                    similarity_matrix[i, j] *= 0.8  # Reduce similarity for mismatched types
         
         # Classify feedback based on similarity
-        similarity_threshold = 0.3  # Lower threshold to match more feedback
+        similarity_threshold = 0.5  # Lower threshold to match more feedback
         classified_feedback = {area.get('area'): [] for area in final_areas}
         
         for i, similarities in enumerate(similarity_matrix):
@@ -3579,7 +3590,8 @@ async def process_csv_data(
     client: AzureOpenAI, 
     csv_data: str,
     source: str = None,
-    slow_mode: bool = False
+    slow_mode: bool = False,
+    skip_insights: bool = False
 ) -> Dict[str, Any]:
     '''
     Process structured CSV data to extract and classify feedback.
@@ -3751,7 +3763,8 @@ async def process_csv_data(
                 all_feedback_embeddings, 
                 feedback_texts,
                 preliminary_classified,  # Pass preliminary classification
-                key_areas  # Pass key areas with area_type
+                key_areas,  # Pass key areas with area_type
+                skip_insights=skip_insights
             )
             
             # Calculate sentiment scores using the same embeddings we already generated
@@ -3768,9 +3781,9 @@ async def process_csv_data(
 
             # Adjust similarity threshold based on dataset size
             if len(all_feedback_items) <= 5:
-                similarity_threshold = 0.5  # Lower threshold for small datasets
+                similarity_threshold = 0.65  # Lower threshold for small datasets
             else:
-                similarity_threshold = 0.7
+                similarity_threshold = 0.8
             
             # Apply type-based weighting
             for i in range(similarity_matrix.shape[0]):
@@ -3781,9 +3794,9 @@ async def process_csv_data(
                     
                     # Apply weighting based on type match
                     if feedback_type == area_type:
-                        similarity_matrix[i, j] *= 1.3  # Boost similarity for matching types
+                        similarity_matrix[i, j] *= 1.2  # Boost similarity for matching types
                     else:
-                        similarity_matrix[i, j] *= 0.7  # Reduce similarity for mismatched types
+                        similarity_matrix[i, j] *= 0.8  # Reduce similarity for mismatched types
             
             # Vectorized matching with weighted similarities
             matches = similarity_matrix > similarity_threshold
@@ -3810,10 +3823,10 @@ async def process_csv_data(
             
             # Fallback for insight summary if embeddings failed
             insight_summary = {
-                "user_loves": "Unable to determine what users love due to an error in embeddings processing",
-                "feature_request": "Unable to identify feature requests due to an error in embeddings processing",
-                "pain_point": "Unable to identify pain points due to an error in embeddings processing",
-                "overall_summary": "Unable to generate an overall summary due to an error"
+                "user_loves": "Insights will be generated via completions" if skip_insights else "Unable to determine what users love due to an error in embeddings processing",
+                "feature_request": "Insights will be generated via completions" if skip_insights else "Unable to identify feature requests due to an error in embeddings processing",
+                "pain_point": "Insights will be generated via completions" if skip_insights else "Unable to identify pain points due to an error in embeddings processing",
+                "overall_summary": "Insights will be generated via completions" if skip_insights else "Unable to generate an overall summary due to an error"
             }
             
             # Fall back to chunked classification via OpenAI
@@ -4209,7 +4222,7 @@ async def analyze_feedback(
             logger.info(f"[JOB {job_id}] Processing {file_ext} directly")
             try:
                 if file_ext in ['.xlsx', '.xls', '.xlsm']:
-                    analysis_results = await process_excel_data(AZURE_CLIENT, file_content, file.filename, source)
+                    analysis_results = await process_excel_data(AZURE_CLIENT, file_content, file.filename, source, skip_insights=(mode == "auto"))
                     processing_method = "excel_direct"
                 else:  # CSV
                     # For CSV mode, we need raw content for validation
@@ -4301,7 +4314,7 @@ Use 'N/A' for any missing values.'''
                             })
                             csv_content = df.to_csv(index=False)
                         
-                        analysis_results = await process_csv_data(AZURE_CLIENT, csv_content, source or file_ext.upper())
+                        analysis_results = await process_csv_data(AZURE_CLIENT, csv_content, source or file_ext.upper(), skip_insights=(mode == "auto"))
                         processing_method = "csv_conversion"
                         
                         # Check if results are valid (only in auto mode)
@@ -4557,7 +4570,7 @@ async def classify_single_review(
                 logger.info(f"Best matching category: {best_category.get('key_area')} (similarity: {best_similarity:.3f})")
                 
                 # If similarity is high enough, use the matched category
-                if best_similarity > 0.7:
+                if best_similarity > 0.8:
                     # Use the matched category but still ask GPT to refine and add area_type
                     prompt += f"\n\nNote: Based on semantic similarity, this review seems to match the category '{best_category.get('key_area')}'. Consider this in your classification."
                     
