@@ -4471,35 +4471,50 @@ async def classify_single_review(
         - area_type: Either "feature" or "issue"
     '''
     try:
+        logger.info(f"[classify-single-review] Endpoint called")
+        
         # Handle both form data and JSON body
         if review is not None:
             # Form data was provided
+            logger.info(f"[classify-single-review] Processing form data input")
             review_text = review
             try:
                 existing_categories = json.loads(existing_json) if existing_json else []
-            except json.JSONDecodeError:
+                logger.info(f"[classify-single-review] Parsed existing categories from form data")
+            except json.JSONDecodeError as e:
+                logger.error(f"[classify-single-review] Failed to parse existing_json: {str(e)}")
                 raise HTTPException(status_code=400, detail="Invalid JSON format for existing categories")
         else:
             # Process as JSON body
+            logger.info(f"[classify-single-review] Processing JSON body input")
             try:
                 body = await request.json()
                 review_text = body.get("review", "")
                 existing_categories = body.get("existing_json", body.get("existing_categories", []))
+                logger.info(f"[classify-single-review] Extracted data from JSON body")
             except Exception as e:
+                logger.error(f"[classify-single-review] Failed to parse request body: {str(e)}")
                 raise HTTPException(status_code=400, detail=f"Invalid request body: {str(e)}")
         
         if not review_text:
             raise HTTPException(status_code=400, detail="Text input is required")
         
-        logger.info(f"Classifying text into multiple categories: {review_text[:100]}...")
+        logger.info(f"[classify-single-review] Starting classification for text: {review_text[:100]}...")
+        logger.info(f"[classify-single-review] Text length: {len(review_text)} characters")
         
         # Format existing categories for the prompt
         existing_categories_text = ""
         if existing_categories:
+            logger.info(f"[classify-single-review] Found {len(existing_categories)} existing categories")
+            for cat in existing_categories:
+                logger.debug(f"[classify-single-review] Existing category: {cat.get('key_area', 'Unknown')} ({cat.get('area_type', 'issue')})")
+            
             existing_categories_text = "\nEXISTING CATEGORIES TO CONSIDER:\n" + "\n".join([
                 f"- {cat.get('key_area', 'Unknown')} ({cat.get('area_type', 'issue')}): {cat.get('customer_problem', 'No description')}"
                 for cat in existing_categories
             ]) + "\n\nTry to use these existing categories when the content matches, but create new specific categories for anything that doesn't fit."
+        else:
+            logger.info(f"[classify-single-review] No existing categories provided")
         
         # Create a comprehensive prompt for multi-classification
         prompt = f'''
@@ -4756,6 +4771,9 @@ Remember:
 
         try:
             # Use GPT to analyze the text
+            logger.info(f"[classify-single-review] Calling GPT-4.1-mini for text classification")
+            logger.info(f"[classify-single-review] Prompt length: {len(prompt)} characters")
+            
             response = AZURE_CLIENT.chat.completions.create(
                 model="gpt-4.1-mini",
                 messages=[
@@ -4770,41 +4788,65 @@ Remember:
                 response_format={"type": "json_object"}
             )
             
+            logger.info(f"[classify-single-review] GPT call successful")
+            
             result_text = response.choices[0].message.content
+            logger.info(f"[classify-single-review] GPT response length: {len(result_text)} characters")
+            logger.debug(f"[classify-single-review] Raw GPT response: {result_text[:500]}...")
             
             # Try to parse the response
             try:
                 # First try direct parsing
                 result = json.loads(result_text)
+                logger.info(f"[classify-single-review] Successfully parsed JSON response")
                 
                 # Handle if it's wrapped in an object
                 if isinstance(result, dict):
+                    logger.info(f"[classify-single-review] Response is a dict with keys: {list(result.keys())}")
                     # Look for an array in the response
                     if "classifications" in result:
                         result = result["classifications"]
+                        logger.info(f"[classify-single-review] Using 'classifications' field")
                     elif "results" in result:
                         result = result["results"]
+                        logger.info(f"[classify-single-review] Using 'results' field")
                     elif "items" in result:
                         result = result["items"]
+                        logger.info(f"[classify-single-review] Using 'items' field")
                     else:
                         # Try to find any key that contains a list
                         for key, value in result.items():
                             if isinstance(value, list):
                                 result = value
+                                logger.info(f"[classify-single-review] Found list in '{key}' field")
                                 break
                         else:
                             # No list found, wrap the single item
+                            logger.warning(f"[classify-single-review] No list found in dict, wrapping as single item")
                             result = [result]
                 
                 # Validate it's a list
                 if not isinstance(result, list):
+                    logger.error(f"[classify-single-review] Response is not a list, type: {type(result)}")
                     raise ValueError("Response is not a list")
+                
+                logger.info(f"[classify-single-review] Extracted {len(result)} items from response")
                 
                 # Validate and fix each item
                 validated_results = []
-                for item in result:
+                for i, item in enumerate(result):
                     if not isinstance(item, dict):
+                        logger.warning(f"[classify-single-review] Item {i} is not a dict, skipping")
                         continue
+                    
+                    # Log missing fields
+                    missing_fields = []
+                    for field in ["key_area", "customer_problem", "sentiment_score", "area_type"]:
+                        if field not in item:
+                            missing_fields.append(field)
+                    
+                    if missing_fields:
+                        logger.warning(f"[classify-single-review] Item {i} missing fields: {missing_fields}")
                     
                     # Ensure all required fields
                     validated_item = {
@@ -4819,6 +4861,7 @@ Remember:
                         score = float(item.get("sentiment_score", 0.0))
                         validated_item["sentiment_score"] = max(-1.0, min(1.0, score))
                     except:
+                        logger.warning(f"[classify-single-review] Item {i} has invalid sentiment score")
                         validated_item["sentiment_score"] = 0.0
                     
                     # Validate area_type
@@ -4827,27 +4870,38 @@ Remember:
                         validated_item["area_type"] = area_type
                     else:
                         # Infer from problem description
-                        validated_item["area_type"] = infer_area_type(review_text, validated_item["customer_problem"])
+                        inferred_type = infer_area_type(review_text, validated_item["customer_problem"])
+                        logger.info(f"[classify-single-review] Item {i} area_type inferred as '{inferred_type}'")
+                        validated_item["area_type"] = inferred_type
                     
                     validated_results.append(validated_item)
                 
                 # If no valid results, create a fallback
                 if not validated_results:
+                    logger.error(f"[classify-single-review] No valid classifications found after validation")
                     raise ValueError("No valid classifications found")
                 
-                logger.info(f"Successfully classified text into {len(validated_results)} categories")
+                logger.info(f"[classify-single-review] Successfully validated {len(validated_results)} classifications")
+                
+                # Log the final results summary
+                for i, item in enumerate(validated_results):
+                    logger.info(f"[classify-single-review] Item {i+1}: {item['key_area']} ({item['area_type']}) - sentiment: {item['sentiment_score']:.2f}")
+                
                 return JSONResponse(content=validated_results, status_code=200)
                 
             except (json.JSONDecodeError, ValueError) as e:
-                logger.error(f"Failed to parse GPT response: {str(e)}")
-                logger.error(f"Raw response: {result_text[:500]}...")
+                logger.error(f"[classify-single-review] Failed to parse GPT response: {str(e)}")
+                logger.error(f"[classify-single-review] Raw response: {result_text[:500]}...")
                 raise
                 
         except Exception as e:
-            logger.error(f"Error during GPT classification: {str(e)}")
+            logger.error(f"[classify-single-review] Error during GPT classification: {type(e).__name__}: {str(e)}")
+            logger.error(f"[classify-single-review] Full traceback: {traceback.format_exc()}")
             
             # Fallback: Try to extract at least something meaningful
             try:
+                logger.info(f"[classify-single-review] Attempting keyword-based fallback classification")
+                
                 # Simple keyword-based classification as last resort
                 issues = []
                 features = []
@@ -4859,32 +4913,43 @@ Remember:
                 text_lower = review_text.lower()
                 
                 # Check for issues
+                issue_found = False
                 for keyword in issue_keywords:
                     if keyword in text_lower:
-                        issues.append({
-                            "key_area": "General Issues",
-                            "customer_problem": f"Text mentions {keyword}-related concerns",
-                            "sentiment_score": -0.3,
-                            "area_type": "issue"
-                        })
+                        issue_found = True
                         break
                 
+                if issue_found:
+                    issues.append({
+                        "key_area": "General Issues",
+                        "customer_problem": f"Text mentions {keyword}-related concerns",
+                        "sentiment_score": -0.3,
+                        "area_type": "issue"
+                    })
+                    logger.info(f"[classify-single-review] Fallback found issue indicator: {keyword}")
+                
                 # Check for features
+                feature_found = False
                 for keyword in feature_keywords:
                     if keyword in text_lower:
-                        features.append({
-                            "key_area": "Feature Requests",
-                            "customer_problem": f"Text contains {keyword}-based suggestions",
-                            "sentiment_score": 0.2,
-                            "area_type": "feature"
-                        })
+                        feature_found = True
                         break
+                
+                if feature_found:
+                    features.append({
+                        "key_area": "Feature Requests",
+                        "customer_problem": f"Text contains {keyword}-based suggestions",
+                        "sentiment_score": 0.2,
+                        "area_type": "feature"
+                    })
+                    logger.info(f"[classify-single-review] Fallback found feature indicator: {keyword}")
                 
                 # Combine and return
                 fallback_results = issues + features
                 
                 if not fallback_results:
                     # Absolute fallback
+                    logger.warning(f"[classify-single-review] No keywords found, using generic fallback")
                     fallback_results = [{
                         "key_area": "General Feedback",
                         "customer_problem": "Unable to classify specific issues or features from the provided text",
@@ -4892,12 +4957,14 @@ Remember:
                         "area_type": "issue"
                     }]
                 
+                logger.info(f"[classify-single-review] Fallback classification returned {len(fallback_results)} items")
                 return JSONResponse(content=fallback_results, status_code=200)
                 
             except Exception as fallback_error:
-                logger.error(f"Fallback classification also failed: {str(fallback_error)}")
+                logger.error(f"[classify-single-review] Fallback classification also failed: {str(fallback_error)}")
                 
                 # Final emergency response
+                logger.error(f"[classify-single-review] Returning emergency response")
                 return JSONResponse(
                     content=[{
                         "key_area": "Classification Error",
