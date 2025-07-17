@@ -4512,12 +4512,13 @@ INPUT TEXT TO ANALYZE:
 CRITICAL INSTRUCTIONS:
 1. The input could be ANYTHING: formal feedback, casual conversation between colleagues, meeting transcript, customer support chat, internal discussion, etc.
 2. Extract problems/requests even if mentioned indirectly (e.g., "John was saying the dashboard is too slow" → dashboard performance issue)
-3. Consolidate related items into broader categories when possible - aim for 2-5 key areas unless the text genuinely contains more distinct topics
-4. If you find 10 small issues about the UI, group them as "UI/UX Issues" with a comprehensive problem description
-5. Classify each as either "feature" (requests/suggestions/enhancements) or "issue" (problems/complaints/bugs)
-6. Calculate sentiment based on how each topic is discussed
+3. Extract EACH distinct issue or feature as a separate item - don't over-consolidate
+4. If someone mentions 3 different API needs, that's 3 separate items, not 1 "API improvements" item
+5. Look for distinct action items, deliverables, or problems even if they're related to the same general topic
+6. Classify each as either "feature" (requests/suggestions/enhancements) or "issue" (problems/complaints/bugs)
+7. Calculate sentiment based on how each topic is discussed
 
-IMPORTANT: Try to keep total key_areas to 5 or fewer by intelligently grouping related items. Only exceed 5 if there are truly distinct, unrelated categories that cannot be merged.
+IMPORTANT: Extract distinct items separately. For example, if an email mentions "Create Super API, enhance Review API, and implement across endpoints" - that's 3 items, not 1. Aim for 2-8 key areas based on what's actually mentioned.
 
 CLASSIFICATION RULES:
 - "feature" = requests, suggestions, enhancements, improvements, "wish", "want", "need", "should have", "would be nice"
@@ -4540,123 +4541,192 @@ YOUR RESPONSE MUST BE A JSON ARRAY OF OBJECTS, each with these exact fields:
     }}
 ]
 
-EXAMPLE 1 - Conversation Transcript (2 key areas):
-Input: "Sarah: Hey Mike, did you see all those customer complaints about the login page? Mike: Yeah, it's a disaster. People can't reset passwords, the captcha is broken, and it times out too fast. Sarah: We really need to fix that. Also, everyone's been asking for that dark mode feature. Mike: True, and mobile notifications would be nice too."
+EXAMPLE 1 - Product Strategy Discussion (4 key areas):
+Input: "Had a long discussion about our challenges. Picking the right features to build is really hard - we have multiple prioritization frameworks but still struggle. Also, our PMs don't spend enough time on customer research. The quarterly planning process remains painful and inefficient. On top of that, we keep building duplicate features across teams which is wasteful."
 
 Output:
 [
     {{
-        "key_area": "Authentication System",
-        "customer_problem": "Login page has multiple critical issues including broken password reset, malfunctioning captcha, and overly short timeout periods",
+        "key_area": "Feature Prioritization",
+        "customer_problem": "Difficulty in selecting the right features to build despite having multiple prioritization frameworks",
+        "sentiment_score": -0.5,
+        "area_type": "issue"
+    }},
+    {{
+        "key_area": "Customer Research",
+        "customer_problem": "Product managers not allocating sufficient time for customer research activities",
+        "sentiment_score": -0.4,
+        "area_type": "issue"
+    }},
+    {{
+        "key_area": "Planning Process",
+        "customer_problem": "Quarterly planning process is painful and inefficient",
+        "sentiment_score": -0.6,
+        "area_type": "issue"
+    }},
+    {{
+        "key_area": "Feature Duplication",
+        "customer_problem": "Teams are building duplicate features leading to wasted resources",
+        "sentiment_score": -0.5,
+        "area_type": "issue"
+    }}
+]
+
+EXAMPLE 2 - Customer Service Chat (3 key areas):
+Input: "Customer: I can't believe how bad this is. First, I can't find where to change my billing address anywhere in the settings. Second, I've been trying to download my invoices for tax purposes but the download button does nothing. Oh and one more thing - could you add a way to save multiple payment methods? I manage several company cards."
+
+Output:
+[
+    {{
+        "key_area": "Settings Navigation",
+        "customer_problem": "Users cannot find where to change billing address in settings",
         "sentiment_score": -0.7,
         "area_type": "issue"
     }},
     {{
-        "key_area": "User Experience",
-        "customer_problem": "Users requesting dark mode theme and mobile push notification features",
+        "key_area": "Invoice Downloads",
+        "customer_problem": "Invoice download button is non-functional preventing users from accessing tax documents",
+        "sentiment_score": -0.8,
+        "area_type": "issue"
+    }},
+    {{
+        "key_area": "Payment Methods",
+        "customer_problem": "Users need ability to save and manage multiple payment methods for different company cards",
+        "sentiment_score": 0.2,
+        "area_type": "feature"
+    }}
+]
+
+EXAMPLE 3 - Team Standup Notes (5 key areas):
+Input: "Morning standup highlights: Lisa mentioned the new hire onboarding is taking 2 weeks which is way too long. Tom said customers in Europe can't access the platform after 6PM due to some timezone bug. Sarah wants us to add automated testing to speed up releases. The sales team is asking for a Salesforce integration by Q2. Also, the search feature returns irrelevant results according to user feedback."
+
+Output:
+[
+    {{
+        "key_area": "Onboarding Duration",
+        "customer_problem": "New employee onboarding process takes 2 weeks which is excessive",
+        "sentiment_score": -0.5,
+        "area_type": "issue"
+    }},
+    {{
+        "key_area": "Regional Access",
+        "customer_problem": "European customers cannot access platform after 6PM due to timezone bug",
+        "sentiment_score": -0.7,
+        "area_type": "issue"
+    }},
+    {{
+        "key_area": "Testing Automation",
+        "customer_problem": "Development team wants automated testing to accelerate release cycles",
+        "sentiment_score": 0.3,
+        "area_type": "feature"
+    }},
+    {{
+        "key_area": "CRM Integration",
+        "customer_problem": "Sales team requires Salesforce integration by Q2",
+        "sentiment_score": 0.2,
+        "area_type": "feature"
+    }},
+    {{
+        "key_area": "Search Accuracy",
+        "customer_problem": "Search feature returns irrelevant results according to user feedback",
+        "sentiment_score": -0.6,
+        "area_type": "issue"
+    }}
+]
+
+EXAMPLE 4 - Executive Email (6 key areas):
+Input: "Team, following up on our board meeting. We need to address these items: 1) Our mobile app ratings dropped to 2.5 stars mainly due to crashes 2) Implement SOC2 compliance for enterprise deals 3) The competitor analysis shows we're behind on AI features 4) Customer churn increased 15% last quarter 5) We need better analytics dashboards for the exec team 6) Consider acquiring that startup for their recommendation engine tech"
+
+Output:
+[
+    {{
+        "key_area": "Mobile App Stability",
+        "customer_problem": "Mobile app ratings dropped to 2.5 stars primarily due to frequent crashes",
+        "sentiment_score": -0.8,
+        "area_type": "issue"
+    }},
+    {{
+        "key_area": "Security Compliance",
+        "customer_problem": "SOC2 compliance implementation needed for enterprise deals",
+        "sentiment_score": 0.1,
+        "area_type": "feature"
+    }},
+    {{
+        "key_area": "AI Capabilities",
+        "customer_problem": "Product lacking AI features compared to competitors",
+        "sentiment_score": -0.4,
+        "area_type": "issue"
+    }},
+    {{
+        "key_area": "Customer Retention",
+        "customer_problem": "Customer churn rate increased by 15% in the last quarter",
+        "sentiment_score": -0.7,
+        "area_type": "issue"
+    }},
+    {{
+        "key_area": "Executive Analytics",
+        "customer_problem": "Executive team needs enhanced analytics dashboards for better decision making",
+        "sentiment_score": 0.2,
+        "area_type": "feature"
+    }},
+    {{
+        "key_area": "Strategic Acquisition",
+        "customer_problem": "Company considering acquiring startup for their recommendation engine technology",
+        "sentiment_score": 0.4,
+        "area_type": "feature"
+    }}
+]
+
+EXAMPLE 5 - Slack Thread (2 key areas):
+Input: "@channel just got off a call with BigCorp. They're threatening to cancel because our platform doesn't support their SSO provider. Also mentioned they'd love real-time collaboration features like Google Docs has."
+
+Output:
+[
+    {{
+        "key_area": "SSO Compatibility",
+        "customer_problem": "Major client threatening cancellation due to lack of support for their SSO provider",
+        "sentiment_score": -0.8,
+        "area_type": "issue"
+    }},
+    {{
+        "key_area": "Collaboration Features",
+        "customer_problem": "Enterprise clients want real-time collaboration features similar to Google Docs",
         "sentiment_score": 0.3,
         "area_type": "feature"
     }}
 ]
 
-EXAMPLE 2 - Support Ticket (3 key areas):
-Input: "Ticket #4521: Customer reporting that batch processing is taking 4x longer than before. Also mentioned they love the new UI design but wish we had API webhooks. BTW, several other customers have reported similar performance issues with large datasets. The data visualization is also not loading properly for datasets over 10k records."
+EXAMPLE 6 - Project Status Email (3 key areas):
+Input: "Hi Team, Please share your status on this task. We had agreed to: Create 1 API for all AI use cases in Assistra: Super API - need status. Review Insights API: I had asked to include other inputs like ability to take free form text, .doc etc. Implementation of this Super API across all endpoints. Where are we with these?"
 
 Output:
 [
     {{
-        "key_area": "Performance Issues",
-        "customer_problem": "Batch processing is 4x slower than before and system struggles with large datasets causing widespread customer impact",
-        "sentiment_score": -0.6,
-        "area_type": "issue"
-    }},
-    {{
-        "key_area": "Data Visualization",
-        "customer_problem": "Visualization feature fails to load for datasets exceeding 10,000 records",
-        "sentiment_score": -0.5,
-        "area_type": "issue"
-    }},
-    {{
-        "key_area": "API Enhancement",
-        "customer_problem": "Customers want webhook functionality added to the API for real-time integrations",
-        "sentiment_score": 0.2,
-        "area_type": "feature"
-    }}
-]
-
-EXAMPLE 3 - Meeting Notes (4 key areas):
-Input: "Q3 Planning Meeting Notes: 1) Sales team says customers hate our pricing page - too confusing, hidden fees, can't compare plans easily 2) Engineering wants to rebuild the entire backend for better scalability 3) Customer success reports that onboarding is taking too long, users dropping off during setup wizard 4) Compliance team needs GDPR features ASAP for European expansion"
-
-Output:
-[
-    {{
-        "key_area": "Pricing Transparency",
-        "customer_problem": "Pricing page is confusing with hidden fees and lacks clear plan comparison causing customer frustration",
-        "sentiment_score": -0.6,
-        "area_type": "issue"
-    }},
-    {{
-        "key_area": "Technical Infrastructure",
-        "customer_problem": "Engineering team wants to rebuild backend architecture for improved scalability",
-        "sentiment_score": 0.2,
+        "key_area": "Super API Creation",
+        "customer_problem": "Team needs to create unified Super API for all AI use cases in Assistra",
+        "sentiment_score": 0.0,
         "area_type": "feature"
     }},
     {{
-        "key_area": "User Onboarding",
-        "customer_problem": "Onboarding process is too lengthy causing users to abandon during setup wizard",
-        "sentiment_score": -0.5,
-        "area_type": "issue"
-    }},
-    {{
-        "key_area": "Compliance Features",
-        "customer_problem": "GDPR compliance features urgently needed for European market expansion",
-        "sentiment_score": 0.1,
-        "area_type": "feature"
-    }}
-]
-
-EXAMPLE 4 - Complex Feedback Email (5 key areas):
-Input: "Hey team, forwarding this from our biggest client: 'Your software has potential but needs work. The reporting module crashes daily, export function doesn't include all fields, and charts are unreadable on mobile. We desperately need SSO integration for our 500 employees, plus real-time collaboration features. The mobile app is practically unusable - buttons too small, gestures don't work, constant logouts. Your support team is great but the knowledge base is outdated. Also, we're required to have audit logs for compliance by next quarter.'"
-
-Output:
-[
-    {{
-        "key_area": "Reporting Module",
-        "customer_problem": "Reporting system crashes daily and exports are missing fields affecting data completeness",
-        "sentiment_score": -0.7,
-        "area_type": "issue"
-    }},
-    {{
-        "key_area": "Mobile Experience",
-        "customer_problem": "Mobile app has severe usability issues including unreadable charts, tiny buttons, broken gestures, and logout problems",
-        "sentiment_score": -0.8,
-        "area_type": "issue"
-    }},
-    {{
-        "key_area": "Enterprise Features",
-        "customer_problem": "Large clients need SSO integration and real-time collaboration capabilities for their teams",
-        "sentiment_score": 0.2,
+        "key_area": "Review API Enhancement",
+        "customer_problem": "Review Insights API needs enhancement to accept additional input types including free form text and .doc files",
+        "sentiment_score": 0.0,
         "area_type": "feature"
     }},
     {{
-        "key_area": "Documentation",
-        "customer_problem": "Knowledge base documentation is outdated despite having helpful support team",
-        "sentiment_score": -0.3,
-        "area_type": "issue"
-    }},
-    {{
-        "key_area": "Compliance Tools",
-        "customer_problem": "Audit logging functionality required for regulatory compliance by next quarter",
-        "sentiment_score": 0.1,
+        "key_area": "API Implementation",
+        "customer_problem": "Super API needs to be implemented across all existing endpoints",
+        "sentiment_score": 0.0,
         "area_type": "feature"
     }}
 ]
 
 Remember:
-- Extract problems even from casual conversations or indirect mentions
-- Group related items intelligently - aim for 2-5 key areas total
-- Be comprehensive in the customer_problem description when grouping multiple related issues
-- Recognize context clues (e.g., "John mentioned..." "Customers are saying..." "The team thinks...")
+- Extract EACH distinct problem, request, or action item separately
+- Don't merge items just because they're somewhat related
+- A single email about "create API, enhance API, implement API" = 3 separate items
+- Look for numbered lists, bullet points, or multiple topics in one sentence
+- Be specific in the customer_problem - don't be vague or overly broad
 - Only output the JSON array, nothing else
 '''
 
@@ -4829,8 +4899,6 @@ Remember:
             }],
             status_code=200
         )
-
-
 def infer_area_type(review_text: str, customer_problem: str) -> str:
     '''
     Infers whether a review is a feature request or an issue based on text analysis.
