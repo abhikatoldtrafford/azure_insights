@@ -4573,7 +4573,7 @@ IMPORTANT:
 - Each distinct topic/issue/request gets its own object in the array
 - Do NOT return a single object - always return an array even for one item
 
-EXAMPLE 1 - Product Strategy Discussion (4 key areas):
+EXAMPLE 1 - Product Strategy Discussion (2 key areas):
 Input: "Had a long discussion about our challenges. Picking the right features to build is really hard - we have multiple prioritization frameworks but still struggle. Also, our PMs don't spend enough time on customer research. The quarterly planning process remains painful and inefficient. On top of that, we keep building duplicate features across teams which is wasteful."
 
 Output:
@@ -4582,12 +4582,6 @@ Output:
         "key_area": "Feature Prioritization",
         "customer_problem": "Difficulty in selecting the right features to build despite having multiple prioritization frameworks",
         "sentiment_score": -0.5,
-        "area_type": "issue"
-    }},
-    {{
-        "key_area": "Customer Research",
-        "customer_problem": "Product managers not allocating sufficient time for customer research activities",
-        "sentiment_score": -0.4,
         "area_type": "issue"
     }},
     {{
@@ -4604,7 +4598,7 @@ Output:
     }}
 ]
 
-EXAMPLE 2 - Customer Service Chat (3 key areas):
+EXAMPLE 2 - Customer Service Chat (2 key areas):
 Input: "Customer: I can't believe how bad this is. First, I can't find where to change my billing address anywhere in the settings. Second, I've been trying to download my invoices for tax purposes but the download button does nothing. Oh and one more thing - could you add a way to save multiple payment methods? I manage several company cards."
 
 Output:
@@ -4616,12 +4610,6 @@ Output:
         "area_type": "issue"
     }},
     {{
-        "key_area": "Invoice Downloads",
-        "customer_problem": "Invoice download button is non-functional preventing users from accessing tax documents",
-        "sentiment_score": -0.8,
-        "area_type": "issue"
-    }},
-    {{
         "key_area": "Payment Methods",
         "customer_problem": "Users need ability to save and manage multiple payment methods for different company cards",
         "sentiment_score": 0.2,
@@ -4629,7 +4617,7 @@ Output:
     }}
 ]
 
-EXAMPLE 3 - Team Standup Notes (5 key areas):
+EXAMPLE 3 - Team Standup Notes (3 key areas):
 Input: "Morning standup highlights: Lisa mentioned the new hire onboarding is taking 2 weeks which is way too long. Tom said customers in Europe can't access the platform after 6PM due to some timezone bug. Sarah wants us to add automated testing to speed up releases. The sales team is asking for a Salesforce integration by Q2. Also, the search feature returns irrelevant results according to user feedback."
 
 Output:
@@ -4638,12 +4626,6 @@ Output:
         "key_area": "Onboarding Duration",
         "customer_problem": "New employee onboarding process takes 2 weeks which is excessive",
         "sentiment_score": -0.5,
-        "area_type": "issue"
-    }},
-    {{
-        "key_area": "Regional Access",
-        "customer_problem": "European customers cannot access platform after 6PM due to timezone bug",
-        "sentiment_score": -0.7,
         "area_type": "issue"
     }},
     {{
@@ -4658,25 +4640,14 @@ Output:
         "sentiment_score": 0.2,
         "area_type": "feature"
     }},
-    {{
-        "key_area": "Search Accuracy",
-        "customer_problem": "Search feature returns irrelevant results according to user feedback",
-        "sentiment_score": -0.6,
-        "area_type": "issue"
-    }}
 ]
 
-EXAMPLE 4 - Executive Email (6 key areas):
+EXAMPLE 4 - Executive Email (4 key areas):
 Input: "Team, following up on our board meeting. We need to address these items: 1) Our mobile app ratings dropped to 2.5 stars mainly due to crashes 2) Implement SOC2 compliance for enterprise deals 3) The competitor analysis shows we're behind on AI features 4) Customer churn increased 15% last quarter 5) We need better analytics dashboards for the exec team 6) Consider acquiring that startup for their recommendation engine tech"
 
 Output:
 [
-    {{
-        "key_area": "Mobile App Stability",
-        "customer_problem": "Mobile app ratings dropped to 2.5 stars primarily due to frequent crashes",
-        "sentiment_score": -0.8,
-        "area_type": "issue"
-    }},
+
     {{
         "key_area": "Security Compliance",
         "customer_problem": "SOC2 compliance implementation needed for enterprise deals",
@@ -4687,12 +4658,6 @@ Output:
         "key_area": "AI Capabilities",
         "customer_problem": "Product lacking AI features compared to competitors",
         "sentiment_score": -0.4,
-        "area_type": "issue"
-    }},
-    {{
-        "key_area": "Customer Retention",
-        "customer_problem": "Customer churn rate increased by 15% in the last quarter",
-        "sentiment_score": -0.7,
         "area_type": "issue"
     }},
     {{
@@ -4728,54 +4693,6 @@ Output:
     }}
 ]
 
-EXAMPLE 7 - Strategy Discussion (7 key areas):
-Input: "Strategy is definitely what our problem is and important. Picking the right thing (we have bunch of frameworks to prioritize) which one do you invest on. You also have to have understanding of how PMs spend time on customer research. Quarterly planning still painful process. We do build the same stuff so believe repeatable issue is a pain. AI is changing lot of things on how we operate. There is not a lot of hiring going on for junior PMs."
-
-Output:
-[
-    {{
-        "key_area": "Strategic Direction",
-        "customer_problem": "Organization struggling with overall strategy definition and execution",
-        "sentiment_score": -0.5,
-        "area_type": "issue"
-    }},
-    {{
-        "key_area": "Prioritization Frameworks",
-        "customer_problem": "Difficulty choosing which prioritization framework to use among multiple options",
-        "sentiment_score": -0.4,
-        "area_type": "issue"
-    }},
-    {{
-        "key_area": "Customer Research",
-        "customer_problem": "Need better understanding of how product managers allocate time for customer research",
-        "sentiment_score": -0.3,
-        "area_type": "issue"
-    }},
-    {{
-        "key_area": "Planning Process",
-        "customer_problem": "Quarterly planning process remains painful and inefficient",
-        "sentiment_score": -0.6,
-        "area_type": "issue"
-    }},
-    {{
-        "key_area": "Feature Duplication",
-        "customer_problem": "Teams repeatedly building the same features causing waste",
-        "sentiment_score": -0.5,
-        "area_type": "issue"
-    }},
-    {{
-        "key_area": "AI Transformation",
-        "customer_problem": "AI is changing operational processes requiring adaptation",
-        "sentiment_score": 0.0,
-        "area_type": "issue"
-    }},
-    {{
-        "key_area": "Talent Acquisition",
-        "customer_problem": "Limited hiring opportunities for junior product managers",
-        "sentiment_score": -0.4,
-        "area_type": "issue"
-    }}
-]
 
 Remember:
 - ALWAYS return a JSON array starting with [ and ending with ]
@@ -4783,7 +4700,6 @@ Remember:
 - Extract EACH distinct problem, request, or action item separately
 - Minimum 2 items for any text over 100 characters
 - Don't merge items just because they're somewhat related
-- A single email about "create API, enhance API, implement API" = 3 separate items
 - Look for numbered lists, bullet points, or multiple topics in one sentence
 - Be specific in the customer_problem - don't be vague or overly broad
 - Only output the JSON array, nothing else
@@ -4807,7 +4723,8 @@ Remember:
                         {"role": "user", "content": prompt}
                     ],
                     temperature=0.2,
-                    max_tokens=3000
+                    max_tokens=3000,
+                    response_format={"type": "json_object"}
                 )
                 
                 logger.info(f"[classify-single-review] GPT call successful")
