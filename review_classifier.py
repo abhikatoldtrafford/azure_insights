@@ -289,6 +289,844 @@ COMMON_KEY_AREAS = [
     "Wishlist & Favorites",
     "App Filters & Sorting"
 ]
+# Required pip packages to add to requirements.txt:
+# unstructured>=0.10.0
+# unstructured[all-docs]>=0.10.0  # For full document support
+# python-magic>=0.4.27  # Already in your requirements
+# chardet>=5.0.0  # Already in your requirements
+# pandas  # Already in your requirements
+# openpyxl  # Already in your requirements
+# 
+# Optional but recommended for better extraction:
+# pytesseract>=0.3.10  # For OCR support
+# pdf2image>=1.16.3  # For PDF image extraction
+# unstructured[local-inference]  # For local ML models
+
+import os
+import logging
+import tempfile
+import traceback
+from typing import Union, Optional, List, Dict, Any
+from io import BytesIO, StringIO
+import json
+import re
+
+# Core imports
+import pandas as pd
+import chardet
+
+# Try importing Unstructured components
+try:
+    from unstructured.partition.auto import partition
+    UNSTRUCTURED_AVAILABLE = True
+except ImportError:
+    UNSTRUCTURED_AVAILABLE = False
+    partition = None
+
+# Import specific partitioners for fallback
+try:
+    from unstructured.partition.csv import partition_csv
+except ImportError:
+    partition_csv = None
+
+try:
+    from unstructured.partition.docx import partition_docx
+except ImportError:
+    partition_docx = None
+
+try:
+    from unstructured.partition.pdf import partition_pdf
+except ImportError:
+    partition_pdf = None
+
+try:
+    from unstructured.partition.html import partition_html
+except ImportError:
+    partition_html = None
+
+try:
+    from unstructured.partition.text import partition_text
+except ImportError:
+    partition_text = None
+
+try:
+    from unstructured.partition.email import partition_email
+except ImportError:
+    partition_email = None
+
+try:
+    from unstructured.partition.xlsx import partition_xlsx
+except ImportError:
+    partition_xlsx = None
+
+try:
+    from unstructured.partition.image import partition_image
+except ImportError:
+    partition_image = None
+
+try:
+    from unstructured.partition.json import partition_json
+except ImportError:
+    partition_json = None
+
+try:
+    from unstructured.partition.xml import partition_xml
+except ImportError:
+    partition_xml = None
+
+try:
+    from unstructured.partition.md import partition_md
+except ImportError:
+    partition_md = None
+
+try:
+    from unstructured.partition.pptx import partition_pptx
+except ImportError:
+    partition_pptx = None
+
+try:
+    from unstructured.partition.msg import partition_msg
+except ImportError:
+    partition_msg = None
+
+try:
+    from unstructured.partition.rtf import partition_rtf
+except ImportError:
+    partition_rtf = None
+
+try:
+    from unstructured.partition.epub import partition_epub
+except ImportError:
+    partition_epub = None
+
+try:
+    from unstructured.partition.odt import partition_odt
+except ImportError:
+    partition_odt = None
+
+try:
+    from unstructured.partition.doc import partition_doc
+except ImportError:
+    partition_doc = None
+
+try:
+    from unstructured.partition.ppt import partition_ppt
+except ImportError:
+    partition_ppt = None
+
+try:
+    from unstructured.partition.tsv import partition_tsv
+except ImportError:
+    partition_tsv = None
+
+try:
+    from unstructured.partition.rst import partition_rst
+except ImportError:
+    partition_rst = None
+
+try:
+    from unstructured.partition.org import partition_org
+except ImportError:
+    partition_org = None
+
+# Fallback imports for when Unstructured isn't available
+try:
+    from docx import Document as DocxDocument
+except ImportError:
+    DocxDocument = None
+
+try:
+    import PyPDF2
+except ImportError:
+    PyPDF2 = None
+
+try:
+    from pptx import Presentation
+except ImportError:
+    Presentation = None
+
+try:
+    import html2text
+except ImportError:
+    html2text = None
+
+try:
+    import markdown
+except ImportError:
+    markdown = None
+
+try:
+    import pdfplumber
+except ImportError:
+    pdfplumber = None
+
+
+class UnstructuredDocumentExtractor:
+    """
+    Production-grade universal document text extractor using Unstructured library.
+    
+    This extractor leverages the powerful Unstructured library for sophisticated
+    document parsing, with comprehensive fallbacks for robustness.
+    
+    Supported formats (via Unstructured):
+    - Documents: DOC, DOCX, ODT, PDF, RTF, TXT, LOG
+    - Spreadsheets: XLS, XLSX, CSV, TSV
+    - Presentations: PPT, PPTX
+    - Web: HTML, HTM, XML
+    - Email: EML, MSG
+    - Images: PNG, JPG, JPEG, TIFF, BMP, HEIC (with OCR)
+    - E-books: EPUB
+    - Markup: MD, RST, ORG
+    - Code: JS, PY, JAVA, CPP, CC, CXX, C, CS, PHP, RB, SWIFT, TS, GO
+    - Data: JSON
+    """
+    
+    def __init__(self, logger: Optional[logging.Logger] = None):
+        """Initialize the extractor with optional logger."""
+        self.logger = logger or logging.getLogger(__name__)
+        
+        # Log available components
+        if UNSTRUCTURED_AVAILABLE:
+            self.logger.info("Unstructured library is available")
+        else:
+            self.logger.warning("Unstructured library not available, using fallback methods")
+            
+    def extract_text(self, 
+                    file_content: Union[bytes, str], 
+                    filename: str,
+                    encoding: Optional[str] = None,
+                    strategy: str = "auto",
+                    include_metadata: bool = False,
+                    max_partition_length: int = 1500,
+                    languages: Optional[List[str]] = None,
+                    extract_tables: bool = True) -> str:
+        """
+        Extract text from any supported document type using Unstructured.
+        
+        Args:
+            file_content: Raw file content as bytes or string
+            filename: Original filename for type detection
+            encoding: Optional encoding override
+            strategy: Partitioning strategy ("auto", "fast", "hi_res", "ocr_only")
+            include_metadata: Whether to include element metadata in output
+            max_partition_length: Maximum length for text partitions
+            languages: OCR languages (e.g., ["eng", "spa"])
+            extract_tables: Whether to extract and format tables
+            
+        Returns:
+            Extracted text as string
+        """
+        try:
+            # Convert string to bytes if needed
+            if isinstance(file_content, str):
+                file_content = file_content.encode('utf-8')
+            
+            # Get file extension
+            file_ext = os.path.splitext(filename)[1].lower()
+            self.logger.info(f"Extracting text from {filename} (type: {file_ext})")
+            
+            # Try Unstructured first if available
+            if UNSTRUCTURED_AVAILABLE:
+                try:
+                    text = self._extract_with_unstructured(
+                        file_content, filename, encoding, strategy, 
+                        include_metadata, max_partition_length, languages
+                    )
+                    if text and len(text.strip()) > 10:
+                        return text
+                except Exception as e:
+                    self.logger.warning(f"Unstructured extraction failed: {str(e)}, trying fallbacks")
+            
+            # Use fallback methods
+            return self._extract_with_fallback(file_content, filename, encoding)
+            
+        except Exception as e:
+            self.logger.error(f"Error extracting text from {filename}: {str(e)}")
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
+            # Emergency fallback
+            return self._emergency_text_extraction(file_content)
+    
+    def _extract_with_unstructured(self, 
+                                  file_content: bytes, 
+                                  filename: str,
+                                  encoding: Optional[str],
+                                  strategy: str,
+                                  include_metadata: bool,
+                                  max_partition_length: int,
+                                  languages: Optional[List[str]]) -> str:
+        """Extract text using Unstructured library."""
+        # Save to temporary file (Unstructured often works better with files)
+        with tempfile.NamedTemporaryFile(
+            delete=False, 
+            suffix=os.path.splitext(filename)[1]
+        ) as tmp_file:
+            tmp_file.write(file_content)
+            tmp_path = tmp_file.name
+        
+        try:
+            # Prepare kwargs
+            kwargs = {
+                "filename": tmp_path,
+                "encoding": encoding,
+                "max_partition": max_partition_length,
+            }
+            
+            # Add strategy for supported file types
+            file_ext = os.path.splitext(filename)[1].lower()
+            if file_ext in ['.pdf', '.png', '.jpg', '.jpeg', '.tiff', '.bmp', '.heic']:
+                kwargs["strategy"] = strategy
+                if languages:
+                    kwargs["languages"] = languages
+            
+            # Special handling for specific file types
+            if file_ext in ['.html', '.htm']:
+                kwargs["include_page_breaks"] = True
+            elif file_ext in ['.pdf']:
+                kwargs["include_page_breaks"] = True
+                kwargs["infer_table_structure"] = True
+            elif file_ext in ['.eml', '.msg']:
+                kwargs["process_attachments"] = False  # Don't process attachments for text extraction
+                kwargs["content_source"] = "text/html"  # Prefer HTML content
+                
+            # Use the main partition function
+            elements = partition(**kwargs)
+            
+            # Convert elements to text
+            text_parts = []
+            
+            for element in elements:
+                # Get element text
+                element_text = str(element)
+                
+                if include_metadata and hasattr(element, 'metadata'):
+                    # Add metadata if requested
+                    metadata = element.metadata
+                    if hasattr(metadata, 'page_number') and metadata.page_number:
+                        element_text = f"[Page {metadata.page_number}] {element_text}"
+                    if hasattr(metadata, 'section') and metadata.section:
+                        element_text = f"[{metadata.section}] {element_text}"
+                
+                # Handle tables specially
+                if hasattr(element, 'metadata') and hasattr(element.metadata, 'text_as_html'):
+                    # Convert HTML table to text representation
+                    table_text = self._html_table_to_text(element.metadata.text_as_html)
+                    if table_text:
+                        text_parts.append(table_text)
+                    else:
+                        text_parts.append(element_text)
+                else:
+                    text_parts.append(element_text)
+            
+            return "\n\n".join(text_parts)
+            
+        finally:
+            # Clean up temp file
+            try:
+                os.unlink(tmp_path)
+            except:
+                pass
+    
+    def _extract_with_fallback(self, file_content: bytes, filename: str, encoding: Optional[str]) -> str:
+        """Fallback extraction methods when Unstructured is not available or fails."""
+        file_ext = os.path.splitext(filename)[1].lower()
+        
+        # Try specific extractors based on file type
+        if file_ext in ['.docx']:
+            return self._extract_docx_fallback(file_content)
+        elif file_ext in ['.pdf']:
+            return self._extract_pdf_fallback(file_content)
+        elif file_ext in ['.xlsx', '.xls']:
+            return self._extract_excel_fallback(file_content, filename)
+        elif file_ext in ['.csv']:
+            return self._extract_csv_fallback(file_content, encoding)
+        elif file_ext in ['.html', '.htm']:
+            return self._extract_html_fallback(file_content, encoding)
+        elif file_ext in ['.json']:
+            return self._extract_json_fallback(file_content, encoding)
+        elif file_ext in ['.xml']:
+            return self._extract_xml_fallback(file_content, encoding)
+        elif file_ext in ['.md', '.markdown']:
+            return self._extract_markdown_fallback(file_content, encoding)
+        elif file_ext in ['.pptx']:
+            return self._extract_pptx_fallback(file_content)
+        elif file_ext in ['.eml']:
+            return self._extract_email_fallback(file_content, encoding)
+        elif file_ext in ['.msg']:
+            return self._extract_msg_fallback(file_content)
+        else:
+            # Default text extraction
+            return self._extract_text_with_encoding(file_content, encoding)
+    
+    def _extract_docx_fallback(self, file_content: bytes) -> str:
+        """Fallback DOCX extraction without Unstructured."""
+        if DocxDocument:
+            try:
+                doc = DocxDocument(BytesIO(file_content))
+                paragraphs = []
+                
+                # Extract paragraphs
+                for para in doc.paragraphs:
+                    if para.text.strip():
+                        paragraphs.append(para.text)
+                
+                # Extract tables
+                for table in doc.tables:
+                    table_text = []
+                    for row in table.rows:
+                        row_text = []
+                        for cell in row.cells:
+                            if cell.text.strip():
+                                row_text.append(cell.text.strip())
+                        if row_text:
+                            table_text.append(" | ".join(row_text))
+                    if table_text:
+                        paragraphs.append("\n".join(table_text))
+                
+                return "\n\n".join(paragraphs)
+            except Exception as e:
+                self.logger.error(f"DOCX fallback failed: {str(e)}")
+        
+        # Try XML extraction
+        return self._extract_docx_xml_fallback(file_content)
+    
+    def _extract_docx_xml_fallback(self, file_content: bytes) -> str:
+        """Extract text from DOCX by parsing XML."""
+        try:
+            import zipfile
+            import xml.etree.ElementTree as ET
+            
+            text_parts = []
+            
+            with zipfile.ZipFile(BytesIO(file_content)) as docx:
+                # Extract main document
+                if 'word/document.xml' in docx.namelist():
+                    xml_content = docx.read('word/document.xml')
+                    tree = ET.fromstring(xml_content)
+                    
+                    namespaces = {
+                        'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+                    }
+                    
+                    # Extract paragraphs
+                    for para in tree.findall('.//w:p', namespaces):
+                        para_text = []
+                        for t in para.findall('.//w:t', namespaces):
+                            if t.text:
+                                para_text.append(t.text)
+                        if para_text:
+                            text_parts.append(''.join(para_text))
+            
+            return "\n".join(text_parts)
+        except:
+            return self._extract_text_with_encoding(file_content)
+    
+    def _extract_pdf_fallback(self, file_content: bytes) -> str:
+        """Fallback PDF extraction without Unstructured."""
+        # Try pdfplumber first (better for tables)
+        if pdfplumber:
+            try:
+                import pdfplumber
+                text_parts = []
+                
+                with pdfplumber.open(BytesIO(file_content)) as pdf:
+                    for i, page in enumerate(pdf.pages):
+                        page_text = page.extract_text()
+                        if page_text:
+                            text_parts.append(f"[Page {i+1}]\n{page_text}")
+                        
+                        # Extract tables
+                        tables = page.extract_tables()
+                        for table in tables:
+                            if table:
+                                table_text = self._format_table(table)
+                                text_parts.append(table_text)
+                
+                return "\n\n".join(text_parts)
+            except:
+                pass
+        
+        # Try PyPDF2
+        if PyPDF2:
+            try:
+                pdf_file = BytesIO(file_content)
+                pdf_reader = PyPDF2.PdfReader(pdf_file)
+                
+                text_parts = []
+                for page_num in range(len(pdf_reader.pages)):
+                    page = pdf_reader.pages[page_num]
+                    text = page.extract_text()
+                    if text.strip():
+                        text_parts.append(f"[Page {page_num + 1}]\n{text}")
+                
+                return "\n\n".join(text_parts)
+            except:
+                pass
+        
+        return self._extract_text_with_encoding(file_content)
+    
+    def _extract_excel_fallback(self, file_content: bytes, filename: str) -> str:
+        """Fallback Excel extraction without Unstructured."""
+        try:
+            # Save to temp file
+            with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(filename)[1]) as tmp:
+                tmp.write(file_content)
+                tmp_path = tmp.name
+            
+            try:
+                excel_file = pd.ExcelFile(tmp_path)
+                text_parts = []
+                
+                for sheet_name in excel_file.sheet_names:
+                    df = pd.read_excel(tmp_path, sheet_name=sheet_name)
+                    text_parts.append(f"\n[Sheet: {sheet_name}]\n")
+                    
+                    if not df.empty:
+                        # Convert to readable format
+                        text_parts.append(df.to_string())
+                
+                return "\n".join(text_parts)
+            finally:
+                os.unlink(tmp_path)
+        except:
+            return self._extract_csv_fallback(file_content, None)
+    
+    def _extract_csv_fallback(self, file_content: bytes, encoding: Optional[str]) -> str:
+        """Fallback CSV extraction without Unstructured."""
+        try:
+            if encoding is None:
+                encoding = self._detect_encoding(file_content)
+            
+            text_content = file_content.decode(encoding, errors='replace')
+            
+            try:
+                df = pd.read_csv(StringIO(text_content))
+                return df.to_string()
+            except:
+                return text_content
+        except:
+            return self._extract_text_with_encoding(file_content, encoding)
+    
+    def _extract_html_fallback(self, file_content: bytes, encoding: Optional[str]) -> str:
+        """Fallback HTML extraction without Unstructured."""
+        try:
+            if encoding is None:
+                encoding = self._detect_encoding(file_content)
+            
+            text_content = file_content.decode(encoding, errors='replace')
+            
+            if html2text:
+                h = html2text.HTML2Text()
+                h.ignore_links = False
+                h.body_width = 0  # Don't wrap lines
+                return h.handle(text_content)
+            else:
+                # Basic HTML stripping
+                text = re.sub(r'<script[^>]*>.*?</script>', '', text_content, flags=re.DOTALL)
+                text = re.sub(r'<style[^>]*>.*?</style>', '', text, flags=re.DOTALL)
+                text = re.sub(r'<[^>]+>', ' ', text)
+                text = re.sub(r'\s+', ' ', text)
+                return text.strip()
+        except:
+            return self._extract_text_with_encoding(file_content, encoding)
+    
+    def _extract_json_fallback(self, file_content: bytes, encoding: Optional[str]) -> str:
+        """Fallback JSON extraction without Unstructured."""
+        try:
+            if encoding is None:
+                encoding = self._detect_encoding(file_content)
+            
+            text_content = file_content.decode(encoding, errors='replace')
+            data = json.loads(text_content)
+            
+            # Pretty print JSON
+            return json.dumps(data, indent=2, ensure_ascii=False)
+        except:
+            return self._extract_text_with_encoding(file_content, encoding)
+    
+    def _extract_xml_fallback(self, file_content: bytes, encoding: Optional[str]) -> str:
+        """Fallback XML extraction without Unstructured."""
+        try:
+            import xml.etree.ElementTree as ET
+            
+            if encoding is None:
+                encoding = self._detect_encoding(file_content)
+            
+            text_content = file_content.decode(encoding, errors='replace')
+            root = ET.fromstring(text_content)
+            
+            # Extract all text from XML
+            texts = []
+            for elem in root.iter():
+                if elem.text and elem.text.strip():
+                    texts.append(elem.text.strip())
+                if elem.tail and elem.tail.strip():
+                    texts.append(elem.tail.strip())
+            
+            return "\n".join(texts)
+        except:
+            # Just strip tags
+            if encoding is None:
+                encoding = self._detect_encoding(file_content)
+            text = file_content.decode(encoding, errors='replace')
+            text = re.sub(r'<[^>]+>', ' ', text)
+            return re.sub(r'\s+', ' ', text).strip()
+    
+    def _extract_markdown_fallback(self, file_content: bytes, encoding: Optional[str]) -> str:
+        """Fallback Markdown extraction without Unstructured."""
+        try:
+            if encoding is None:
+                encoding = self._detect_encoding(file_content)
+            
+            text_content = file_content.decode(encoding, errors='replace')
+            
+            if markdown and html2text:
+                # Convert to HTML then to plain text
+                html_content = markdown.markdown(text_content)
+                h = html2text.HTML2Text()
+                h.body_width = 0
+                return h.handle(html_content)
+            
+            return text_content
+        except:
+            return self._extract_text_with_encoding(file_content, encoding)
+    
+    def _extract_pptx_fallback(self, file_content: bytes) -> str:
+        """Fallback PPTX extraction without Unstructured."""
+        if Presentation:
+            try:
+                prs = Presentation(BytesIO(file_content))
+                text_parts = []
+                
+                for i, slide in enumerate(prs.slides):
+                    text_parts.append(f"\n[Slide {i + 1}]\n")
+                    
+                    for shape in slide.shapes:
+                        if hasattr(shape, "text") and shape.text:
+                            text_parts.append(shape.text)
+                        
+                        if shape.has_table:
+                            table_text = []
+                            for row in shape.table.rows:
+                                row_text = []
+                                for cell in row.cells:
+                                    if cell.text.strip():
+                                        row_text.append(cell.text.strip())
+                                if row_text:
+                                    table_text.append(" | ".join(row_text))
+                            if table_text:
+                                text_parts.append("\n".join(table_text))
+                
+                return "\n".join(text_parts)
+            except:
+                pass
+        
+        return self._extract_text_with_encoding(file_content)
+    
+    def _extract_email_fallback(self, file_content: bytes, encoding: Optional[str]) -> str:
+        """Fallback email extraction without Unstructured."""
+        try:
+            import email
+            from email import policy
+            
+            if encoding is None:
+                encoding = self._detect_encoding(file_content)
+            
+            # Parse email
+            msg = email.message_from_bytes(file_content, policy=policy.default)
+            
+            text_parts = []
+            
+            # Add headers
+            headers = ['From', 'To', 'Subject', 'Date']
+            for header in headers:
+                value = msg.get(header)
+                if value:
+                    text_parts.append(f"{header}: {value}")
+            
+            text_parts.append("")  # Empty line
+            
+            # Extract body
+            if msg.is_multipart():
+                for part in msg.walk():
+                    if part.get_content_type() == "text/plain":
+                        payload = part.get_payload(decode=True)
+                        if payload:
+                            text_parts.append(payload.decode(encoding, errors='replace'))
+                    elif part.get_content_type() == "text/html" and not any("text/plain" in p.get_content_type() for p in msg.walk()):
+                        payload = part.get_payload(decode=True)
+                        if payload:
+                            html_text = payload.decode(encoding, errors='replace')
+                            # Convert HTML to text
+                            if html2text:
+                                h = html2text.HTML2Text()
+                                text_parts.append(h.handle(html_text))
+                            else:
+                                # Strip HTML tags
+                                text = re.sub(r'<[^>]+>', ' ', html_text)
+                                text_parts.append(text)
+            else:
+                payload = msg.get_payload(decode=True)
+                if payload:
+                    text_parts.append(payload.decode(encoding, errors='replace'))
+            
+            return "\n".join(text_parts)
+        except:
+            return self._extract_text_with_encoding(file_content, encoding)
+    
+    def _extract_msg_fallback(self, file_content: bytes) -> str:
+        """Fallback MSG extraction without Unstructured."""
+        # MSG files are complex binary format, just extract readable text
+        return self._extract_text_with_encoding(file_content)
+    
+    def _html_table_to_text(self, html_table: str) -> str:
+        """Convert HTML table to readable text format."""
+        try:
+            # Simple HTML table parsing
+            rows = re.findall(r'<tr[^>]*>(.*?)</tr>', html_table, re.DOTALL)
+            table_text = []
+            
+            for row in rows:
+                cells = re.findall(r'<t[hd][^>]*>(.*?)</t[hd]>', row, re.DOTALL)
+                if cells:
+                    # Clean cell content
+                    clean_cells = []
+                    for cell in cells:
+                        cell_text = re.sub(r'<[^>]+>', '', cell)
+                        cell_text = cell_text.strip()
+                        clean_cells.append(cell_text)
+                    
+                    table_text.append(" | ".join(clean_cells))
+            
+            return "\n".join(table_text)
+        except:
+            return ""
+    
+    def _format_table(self, table_data: List[List[Any]]) -> str:
+        """Format table data as readable text."""
+        if not table_data:
+            return ""
+        
+        formatted_rows = []
+        for row in table_data:
+            if row:
+                formatted_row = " | ".join(str(cell) if cell is not None else "" for cell in row)
+                formatted_rows.append(formatted_row)
+        
+        return "\n".join(formatted_rows)
+    
+    def _extract_text_with_encoding(self, file_content: bytes, encoding: Optional[str] = None) -> str:
+        """Extract text with automatic encoding detection."""
+        if encoding is None:
+            encoding = self._detect_encoding(file_content)
+        
+        try:
+            return file_content.decode(encoding, errors='replace')
+        except:
+            # Try common encodings
+            for enc in ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1', 'utf-16']:
+                try:
+                    return file_content.decode(enc, errors='replace')
+                except:
+                    continue
+            
+            # Force UTF-8
+            return file_content.decode('utf-8', errors='replace')
+    
+    def _detect_encoding(self, file_content: bytes) -> str:
+        """Detect file encoding using chardet."""
+        try:
+            # Sample first 100KB for performance
+            sample = file_content[:100000] if len(file_content) > 100000 else file_content
+            result = chardet.detect(sample)
+            
+            encoding = result.get('encoding')
+            confidence = result.get('confidence', 0)
+            
+            if encoding and confidence > 0.7:
+                self.logger.info(f"Detected encoding: {encoding} (confidence: {confidence:.2f})")
+                return encoding
+        except:
+            pass
+        
+        return 'utf-8'
+    
+    def _emergency_text_extraction(self, file_content: bytes) -> str:
+        """Emergency fallback to extract any readable text."""
+        try:
+            # Try to extract printable ASCII and common Unicode
+            text_parts = []
+            i = 0
+            
+            while i < len(file_content):
+                # Try to decode as UTF-8
+                for length in range(4, 0, -1):
+                    if i + length <= len(file_content):
+                        try:
+                            char = file_content[i:i+length].decode('utf-8')
+                            if char.isprintable() or char in '\n\r\t':
+                                text_parts.append(char)
+                                i += length
+                                break
+                        except:
+                            pass
+                else:
+                    # Skip non-decodable byte
+                    i += 1
+            
+            text = ''.join(text_parts)
+            
+            # Clean up
+            text = re.sub(r'\s+', ' ', text)
+            text = re.sub(r' +', ' ', text)
+            
+            return text.strip()
+            
+        except Exception as e:
+            self.logger.error(f"Emergency extraction failed: {str(e)}")
+            return "Unable to extract text from this document."
+async def extract_text_internal(
+    file_content: bytes,
+    filename: str,
+    strategy: str = "auto",
+    languages: Optional[List[str]] = None,
+    encoding: Optional[str] = None,
+    logger: Optional[logging.Logger] = None
+) -> str:
+    """
+    Internal function to extract text from document content.
+    This can be called from other API endpoints.
+    
+    Args:
+        file_content: Raw file content as bytes
+        filename: Original filename for type detection
+        strategy: Extraction strategy
+        languages: OCR languages list
+        encoding: Optional encoding override
+        logger: Logger instance
+        
+    Returns:
+        Extracted text as string
+        
+    Raises:
+        Exception: If extraction fails
+    """
+    if logger is None:
+        logger = logging.getLogger(__name__)
+    
+    try:
+        extractor = UnstructuredDocumentExtractor(logger=logger)
+        return extractor.extract_text(
+            file_content=file_content,
+            filename=filename,
+            encoding=encoding,
+            strategy=strategy,
+            languages=languages
+        )
+    except Exception as e:
+        logger.error(f"Internal text extraction failed: {str(e)}")
+        raise
+
+
 class FileConversionError(Exception):
     '''Custom exception for file conversion errors'''
     pass
