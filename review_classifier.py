@@ -4724,7 +4724,6 @@ Remember:
                     ],
                     temperature=0.2,
                     max_tokens=3000,
-                    response_format={"type": "json_object"}
                 )
                 
                 logger.info(f"[classify-single-review] GPT call successful")
@@ -4817,7 +4816,7 @@ Remember:
                         raise ValueError("Failed to extract list from response")
                     
                     # Check if we have enough items
-                    if len(result) < 2 and len(review_text) > 100:
+                    if len(result) < 2 and len(review_text) > 250:
                         logger.warning(f"[classify-single-review] Only {len(result)} classifications for {len(review_text)} char text")
                         if attempt < max_retries - 1:
                             logger.info(f"[classify-single-review] Retrying to get more classifications...")
