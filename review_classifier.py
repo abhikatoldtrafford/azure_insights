@@ -5440,7 +5440,8 @@ Use 'N/A' for any missing values.'''
 async def classify_single_review(
     request: Request = None,
     review: str = Form(None),
-    existing_json: str = Form(None)
+    existing_json: str = Form(None),
+    file: UploadFile = File(None)
 ) -> JSONResponse:
     '''
     Classifies a single piece of text (review, email, meeting notes, etc.) into multiple categories.
@@ -5459,7 +5460,22 @@ async def classify_single_review(
     '''
     try:
         logger.info(f"[classify-single-review] Endpoint called")
-        
+        if file is not None:
+            logger.info(f"[classify-single-review] File uploaded: {file.filename}, extracting text")
+            try:
+                file_content = await file.read()
+                review = await extract_text_internal(
+                    file_content=file_content,
+                    filename=file.filename,
+                    strategy="auto",
+                    languages=None,
+                    encoding=None,
+                    logger=logger
+                )
+                logger.info(f"[classify-single-review] Extracted {len(review)} characters from file")
+            except Exception as e:
+                logger.error(f"[classify-single-review] Failed to extract text from file: {str(e)}")
+                raise HTTPException(status_code=422, detail=f"Failed to process file: {str(e)}")
         # Handle both form data and JSON body
         if review is not None:
             # Form data was provided
