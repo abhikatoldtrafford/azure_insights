@@ -5480,6 +5480,20 @@ Output:
 ]
 
 
+SPECIAL CASES:
+1. If the text contains NO clear issues, feature requests, or actionable feedback:
+   - Return an empty array: []
+   - This is valid for texts like "Everything is fine", "No comments", "N/A", etc.
+
+2. If the text is too vague or general to classify:
+   - Return a single item with key_area: "General Feedback"
+   - Example: "I have some thoughts" → general feedback category
+
+3. Minimum classifications:
+   - 0 items: Only for text with no actionable content
+   - 1 item: For vague or single-topic text
+   - 2+ items: For text mentioning multiple distinct topics
+
 Remember:
 - ALWAYS return a JSON array starting with [ and ending with ]
 - NEVER return a single object {...} - always an array [...]
@@ -5602,12 +5616,17 @@ Remember:
                         raise ValueError("Failed to extract list from response")
                     
                     # Check if we have enough items
-                    if len(result) < 2 and len(review_text) > 250:
-                        logger.warning(f"[classify-single-review] Only {len(result)} classifications for {len(review_text)} char text")
+                    if len(result) == 0 and len(review_text) > 500:
+                        # Only retry if text is substantial but no classifications found
+                        logger.warning(f"[classify-single-review] No classifications for {len(review_text)} char text")
                         if attempt < max_retries - 1:
-                            logger.info(f"[classify-single-review] Retrying to get more classifications...")
+                            logger.info(f"[classify-single-review] Retrying to get classifications...")
                             await asyncio.sleep(1)
                             continue
+                    elif len(result) < 2 and len(review_text) > 250:
+                        # For medium-length text, we expect at least 2 classifications
+                        logger.info(f"[classify-single-review] Only {len(result)} classifications for {len(review_text)} char text - accepting result")
+                        # Don't retry, accept the result as is
                     
                     logger.info(f"[classify-single-review] Extracted {len(result)} items from response")
                     
@@ -5657,13 +5676,32 @@ Remember:
                     
                     # If no valid results, try again
                     if not validated_results:
-                        logger.error(f"[classify-single-review] No valid classifications found after validation")
-                        if attempt < max_retries - 1:
-                            logger.info(f"[classify-single-review] Retrying...")
-                            await asyncio.sleep(1)
-                            continue
+                        # If GPT explicitly returned an empty array, that's a valid response
+                        if isinstance(result, list) and len(result) == 0:
+                            logger.info(f"[classify-single-review] GPT returned empty array - no classifications found in text")
+                            # Return a default/neutral classification
+                            return JSONResponse(content=[{
+                                "key_area": "General Feedback",
+                                "customer_problem": "No specific issues or feature requests identified in the provided text",
+                                "sentiment_score": 0.0,
+                                "area_type": "issue"
+                            }], status_code=200)
                         else:
-                            raise ValueError("No valid classifications found")
+                            # This is an actual error - missing data in response
+                            logger.error(f"[classify-single-review] No valid classifications found after validation")
+                            if attempt < max_retries - 1:
+                                logger.info(f"[classify-single-review] Retrying...")
+                                await asyncio.sleep(1)
+                                continue
+                            else:
+                                # Return a default response instead of raising error
+                                logger.warning(f"[classify-single-review] All attempts failed to extract valid classifications, returning default")
+                                return JSONResponse(content=[{
+                                    "key_area": "Processing Error",
+                                    "customer_problem": "Unable to classify the provided text after multiple attempts",
+                                    "sentiment_score": -0.2,
+                                    "area_type": "issue"
+                                }], status_code=200)
                     
                     logger.info(f"[classify-single-review] Successfully validated {len(validated_results)} classifications")
                     
