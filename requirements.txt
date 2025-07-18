@@ -16,3 +16,20 @@ starlette>=0.27.0
 typing-extensions>=4.5.0
 python-magic>=0.4.27
 chardet>=5.0.0
+
+# Document extraction packages (electronic documents only)
+unstructured>=0.10.0
+unstructured[all-docs]>=0.10.0
+python-docx>=0.8.11
+python-pptx>=0.6.21
+xlrd>=2.0.1
+pypdf>=3.1.0
+pdfplumber>=0.9.0
+html2text>=2020.1.16
+markdown>=3.4.0
+striprtf>=0.0.22
+ebooklib>=0.18
+python-docx2txt>=0.8
+lxml>=4.9.0
+Pillow>=9.4.0
+pypandoc>=1.11
