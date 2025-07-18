@@ -16,7 +16,6 @@ starlette>=0.27.0
 typing-extensions>=4.5.0
 python-magic>=0.4.27
 chardet>=5.0.0
-
 # Document extraction packages actually used in the code
 unstructured>=0.10.0
 unstructured[all-docs]>=0.10.0
