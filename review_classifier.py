@@ -23,6 +23,155 @@ from io import BytesIO
 from pydantic import BaseModel, ValidationError
 from typing import List, Optional
 
+# Core imports
+import pandas as pd
+import chardet
+
+# Try importing Unstructured components
+try:
+    from unstructured.partition.auto import partition
+    UNSTRUCTURED_AVAILABLE = True
+except ImportError:
+    UNSTRUCTURED_AVAILABLE = False
+    partition = None
+
+# Import specific partitioners for fallback
+try:
+    from unstructured.partition.csv import partition_csv
+except ImportError:
+    partition_csv = None
+
+try:
+    from unstructured.partition.docx import partition_docx
+except ImportError:
+    partition_docx = None
+
+try:
+    from unstructured.partition.pdf import partition_pdf
+except ImportError:
+    partition_pdf = None
+
+try:
+    from unstructured.partition.html import partition_html
+except ImportError:
+    partition_html = None
+
+try:
+    from unstructured.partition.text import partition_text
+except ImportError:
+    partition_text = None
+
+try:
+    from unstructured.partition.email import partition_email
+except ImportError:
+    partition_email = None
+
+try:
+    from unstructured.partition.xlsx import partition_xlsx
+except ImportError:
+    partition_xlsx = None
+
+try:
+    from unstructured.partition.image import partition_image
+except ImportError:
+    partition_image = None
+
+try:
+    from unstructured.partition.json import partition_json
+except ImportError:
+    partition_json = None
+
+try:
+    from unstructured.partition.xml import partition_xml
+except ImportError:
+    partition_xml = None
+
+try:
+    from unstructured.partition.md import partition_md
+except ImportError:
+    partition_md = None
+
+try:
+    from unstructured.partition.pptx import partition_pptx
+except ImportError:
+    partition_pptx = None
+
+try:
+    from unstructured.partition.msg import partition_msg
+except ImportError:
+    partition_msg = None
+
+try:
+    from unstructured.partition.rtf import partition_rtf
+except ImportError:
+    partition_rtf = None
+
+try:
+    from unstructured.partition.epub import partition_epub
+except ImportError:
+    partition_epub = None
+
+try:
+    from unstructured.partition.odt import partition_odt
+except ImportError:
+    partition_odt = None
+
+try:
+    from unstructured.partition.doc import partition_doc
+except ImportError:
+    partition_doc = None
+
+try:
+    from unstructured.partition.ppt import partition_ppt
+except ImportError:
+    partition_ppt = None
+
+try:
+    from unstructured.partition.tsv import partition_tsv
+except ImportError:
+    partition_tsv = None
+
+try:
+    from unstructured.partition.rst import partition_rst
+except ImportError:
+    partition_rst = None
+
+try:
+    from unstructured.partition.org import partition_org
+except ImportError:
+    partition_org = None
+
+# Fallback imports for when Unstructured isn't available
+try:
+    from docx import Document as DocxDocument
+except ImportError:
+    DocxDocument = None
+
+try:
+    import PyPDF2
+except ImportError:
+    PyPDF2 = None
+
+try:
+    from pptx import Presentation
+except ImportError:
+    Presentation = None
+
+try:
+    import html2text
+except ImportError:
+    html2text = None
+
+try:
+    import markdown
+except ImportError:
+    markdown = None
+
+try:
+    import pdfplumber
+except ImportError:
+    pdfplumber = None
+    
 # Add Pydantic models for validation
 
 # Add these constants at the top of your file
