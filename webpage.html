@@ -803,7 +803,7 @@
                     📈 Analyze Feedback
                 </button>
                 <button class="nav-tab" onclick="switchTab('classify')">
-                    🏷️ Classify Review
+                    🏷️ Classify Text
                 </button>
                 <button class="nav-tab" onclick="switchTab('docs')">
                     📚 API Documentation
@@ -871,8 +871,15 @@
         <!-- Classify Single Review Tab -->
         <div id="classify-tab" class="tab-content">
             <div class="section">
-                <h2 class="section-title">Classify Single Review</h2>
-                <p class="text-muted mb-3">Classify a single customer review against existing categories or create new ones.</p>
+                <h2 class="section-title">Classify Text Content</h2>
+                <p class="text-muted mb-3">Classify any text (reviews, emails, meeting notes, etc.) into multiple categories with sentiment analysis.</p>
+
+                <div class="form-group">
+                    <label class="form-label">Text Content</label>
+                    <textarea class="form-control" id="singleReview" 
+                              placeholder="Enter any text: customer review, email, meeting notes, chat transcript, etc..."
+                              rows="4"></textarea>
+                </div>
 
                 <div class="form-group">
                     <label class="form-label">Or Upload a File</label>
@@ -896,18 +903,17 @@
                 </div>
 
                 <button class="btn" onclick="classifySingleReview()">
-                    <span>Classify Review</span>
+                    <span>Classify Text</span>
                     <span>🏷️</span>
                 </button>
 
-                <!-- Classification Result -->
+                <!-- Classification Results -->
                 <div id="classificationResult" class="d-none">
                     <h3 style="margin: 32px 0 16px; font-size: 20px;">Classification Results</h3>
                     <div id="classificationItems"></div>
                 </div>
             </div>
         </div>
-
         <!-- API Documentation Tab -->
         <div id="docs-tab" class="tab-content">
             <div class="section">
@@ -1064,43 +1070,55 @@
                             <span class="endpoint-path">/classify-single-review</span>
                         </div>
                         <p class="endpoint-description">
-                            Classifies a single customer review against existing categories using GPT-4. 
-                            Returns the best matching category or creates a new one if needed, along with sentiment score and category type (feature/issue).
+                            Classifies any text (customer review, meeting notes, email, chat logs, etc.) into multiple distinct categories using GPT-4. 
+                            Returns an array of classifications (typically 2-8 items) with sentiment scores and category types.
+                            Each distinct issue or feature request is classified separately. Supports text extraction from uploaded documents.
                         </p>
                         
-                        <h4 class="text-small" style="margin: 20px 0 12px;">Parameters</h4>
+                        <h4 class="text-small" style="margin: 20px 0 12px;">Response Fields</h4>
                         <table class="params-table">
                             <thead>
                                 <tr>
-                                    <th>Parameter</th>
+                                    <th>Field</th>
                                     <th>Type</th>
-                                    <th>Required</th>
                                     <th>Description</th>
                                 </tr>
                             </thead>
                             <tbody>
                                 <tr>
-                                    <td><code>review</code></td>
+                                    <td><code>key_area</code></td>
                                     <td>string</td>
-                                    <td class="param-required">Required</td>
-                                    <td>The review text to classify</td>
+                                    <td>2-4 words describing the category (e.g., "App Performance", "User Interface")</td>
                                 </tr>
                                 <tr>
-                                    <td><code>existing_json</code></td>
-                                    <td>string/JSON</td>
-                                    <td class="param-optional">Optional</td>
-                                    <td>Existing categories from previous analysis</td>
+                                    <td><code>customer_problem</code></td>
+                                    <td>string</td>
+                                    <td>Comprehensive sentence describing all related issues/requests in this category</td>
+                                </tr>
+                                <tr>
+                                    <td><code>sentiment_score</code></td>
+                                    <td>float</td>
+                                    <td>Sentiment value from -1.0 (very negative) to 1.0 (very positive)</td>
+                                </tr>
+                                <tr>
+                                    <td><code>area_type</code></td>
+                                    <td>string</td>
+                                    <td>Classification type: exactly "issue" or "feature" (lowercase)</td>
                                 </tr>
                             </tbody>
                         </table>
-
+                        <p class="text-small text-muted mt-1">* Either review text or file must be provided</p>
                         <!-- Live Testing Section -->
                         <div class="api-test-section">
                             <h4 style="margin-bottom: 16px; color: var(--accent);">🧪 Live Test</h4>
                             <div class="test-form">
                                 <div class="test-form-row">
-                                    <label>Review:</label>
-                                    <textarea id="test-classify-review" placeholder="The app crashes every time I try to upload a photo" rows="3"></textarea>
+                                    <label>Review Text:</label>
+                                    <textarea id="test-classify-review" placeholder="The app crashes every time I try to upload a photo. Also need dark mode." rows="3"></textarea>
+                                </div>
+                                <div class="test-form-row">
+                                    <label>Or Upload File:</label>
+                                    <input type="file" id="test-classify-file" accept=".txt,.pdf,.docx,.doc,.rtf,.odt,.html,.htm,.md,.csv,.xlsx,.xls">
                                 </div>
                                 <div class="test-form-row">
                                     <label>Existing JSON:</label>
@@ -1134,24 +1152,22 @@
 
                         <div class="code-block">
                             <div class="code-header">
-                                <span class="code-title">cURL Example (Form Data)</span>
-                                <button class="btn copy-btn" onclick="copyCode('classify-curl-form')">Copy</button>
+                                <span class="code-title">cURL Example (Text Input)</span>
+                                <button class="btn copy-btn" onclick="copyCode('classify-curl-text')">Copy</button>
                             </div>
-                            <pre id="classify-curl-form">curl -X POST "<span class="base-url-placeholder">${window.location.origin}</span>/classify-single-review" \
-  -F "review=The app crashes every time I try to upload photos" \
+                            <pre id="classify-curl-text">curl -X POST "<span class="base-url-placeholder">${window.location.origin}</span>/classify-single-review" \
+  -F "review=The app crashes every time I try to upload photos. Also need dark mode and better search." \
   -F 'existing_json=[{"key_area":"App Performance","customer_problem":"App crashes frequently"}]'</pre>
                         </div>
 
                         <div class="code-block">
                             <div class="code-header">
-                                <span class="code-title">Response Example</span>
+                                <span class="code-title">cURL Example (File Upload)</span>
+                                <button class="btn copy-btn" onclick="copyCode('classify-curl-file')">Copy</button>
                             </div>
-                            <pre>{
-  "key_area": "App Performance",
-  "customer_problem": "App crashes during photo upload operations",
-  "sentiment_score": -0.85,
-  "area_type": "issue"
-}</pre>
+                            <pre id="classify-curl-file">curl -X POST "<span class="base-url-placeholder">${window.location.origin}</span>/classify-single-review" \
+  -F "file=@meeting_notes.pdf" \
+  -F 'existing_json=[{"key_area":"Feature Requests","customer_problem":"Users want new capabilities"}]'</pre>
                         </div>
                     </div>
                 </div>
@@ -1525,17 +1541,17 @@
             const review = document.getElementById('singleReview').value.trim();
             const existingJson = document.getElementById('existingCategories').value.trim();
             const file = document.getElementById('classifyFile').files[0];
-        
+
             if (!review && !file) {
-                showToast('Please enter a review or upload a file to classify', 'error');
+                showToast('Please enter text or upload a file to classify', 'error');
                 return;
             }
-        
+
             const btn = event.target;
             const originalText = btn.innerHTML;
             btn.innerHTML = '<span class="spinner"></span> Classifying...';
             btn.disabled = true;
-        
+
             try {
                 const formData = new FormData();
                 
@@ -1550,23 +1566,23 @@
                 if (existingJson) {
                     formData.append('existing_json', existingJson);
                 }
-        
+
                 const response = await fetch(`${API_BASE_URL}/classify-single-review`, {
                     method: 'POST',
                     body: formData
                 });
-        
+
                 if (!response.ok) {
                     const error = await response.json();
                     throw new Error(error.detail || 'Classification failed');
                 }
-        
+
                 const data = await response.json();
                 state.lastClassification = data;
                 
-                displayClassificationResults(data);
+                displayClassificationResults(data);  // CHANGED: Added 's' to function name
                 showToast('Classification completed!', 'success');
-        
+
             } catch (error) {
                 showToast(`Error: ${error.message}`, 'error');
                 console.error('Classification error:', error);
@@ -1575,7 +1591,8 @@
                 btn.disabled = false;
             }
         }
-        function displayClassificationResults(results) {
+
+        function displayClassificationResults(data) {
             const resultDiv = document.getElementById('classificationResult');
             const itemsContainer = document.getElementById('classificationItems');
             
@@ -1584,71 +1601,71 @@
             // Clear previous results
             itemsContainer.innerHTML = '';
             
-            // Display each classification
+            // Create table structure
+            const table = document.createElement('table');
+            table.className = 'params-table';
+            table.style.marginTop = '0';
+            
+            // Create table header
+            const thead = document.createElement('thead');
+            thead.innerHTML = `
+                <tr>
+                    <th style="width: 25%;">Key Area</th>
+                    <th style="width: 45%;">Customer Problem</th>
+                    <th style="width: 15%;">Type</th>
+                    <th style="width: 15%;">Sentiment</th>
+                </tr>
+            `;
+            table.appendChild(thead);
+            
+            // Create table body
+            const tbody = document.createElement('tbody');
+            
             results.forEach((item, index) => {
-                const itemCard = document.createElement('div');
-                itemCard.className = `key-area-card ${item.area_type === 'feature' ? 'feature-area' : 'issue-area'}`;
+                const row = document.createElement('tr');
                 
-                itemCard.innerHTML = `
-                    <div class="key-area-header">
-                        <div>
-                            <div class="key-area-title-wrapper">
-                                <div class="key-area-title">${item.key_area}</div>
-                                <span class="area-type-badge area-type-${item.area_type}">${item.area_type.charAt(0).toUpperCase() + item.area_type.slice(1)}</span>
-                            </div>
-                            <div class="customer-problem">${item.customer_problem}</div>
-                        </div>
-                        <div class="sentiment-badge ${getSentimentClass(item.sentiment_score)}">
+                // Add visual indicator for type
+                const typeClass = item.area_type === 'feature' ? 'area-type-feature' : 'area-type-issue';
+                const sentimentClass = getSentimentClass(item.sentiment_score);
+                
+                row.innerHTML = `
+                    <td style="font-weight: 600; color: var(--accent);">${item.key_area}</td>
+                    <td>${item.customer_problem}</td>
+                    <td><span class="area-type-badge ${typeClass}">${item.area_type.charAt(0).toUpperCase() + item.area_type.slice(1)}</span></td>
+                    <td>
+                        <span class="sentiment-badge ${sentimentClass}">
                             ${getSentimentLabel(item.sentiment_score)} (${item.sentiment_score.toFixed(2)})
-                        </div>
-                    </div>
+                        </span>
+                    </td>
                 `;
                 
-                itemsContainer.appendChild(itemCard);
+                tbody.appendChild(row);
             });
+            
+            table.appendChild(tbody);
+            itemsContainer.appendChild(table);
+            
+            // Add summary info
+            const summary = document.createElement('div');
+            summary.className = 'text-muted text-small';
+            summary.style.marginTop = '16px';
+            summary.textContent = `Found ${data.length} classification${data.length !== 1 ? 's' : ''} in the text`;
+            itemsContainer.appendChild(summary);
             
             resultDiv.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }
-        
+
         function getSentimentClass(score) {
             if (score >= 0.2) return 'sentiment-positive';
             if (score <= -0.2) return 'sentiment-negative';
             return 'sentiment-neutral';
         }
-        
+
         function getSentimentLabel(score) {
             if (score >= 0.2) return 'Positive';
             if (score <= -0.2) return 'Negative';
             return 'Neutral';
         }
-        function handleClassifyFile(event) {
-            const file = event.target.files[0];
-            if (!file) return;
-        
-            const fileInfo = document.getElementById('classifyFileInfo');
-            fileInfo.innerHTML = `
-                <div class="file-info">
-                    <div class="file-details">
-                        <span style="font-size: 24px;">📄</span>
-                        <div>
-                            <div style="font-weight: 600;">${file.name}</div>
-                            <div class="text-small text-muted">${formatFileSize(file.size)}</div>
-                        </div>
-                    </div>
-                    <button class="btn btn-secondary btn-small" onclick="removeClassifyFile()">Remove</button>
-                </div>
-            `;
-            fileInfo.style.display = 'block';
-            
-            // Clear text input if file is selected
-            document.getElementById('singleReview').value = '';
-        }
-        
-        function removeClassifyFile() {
-            document.getElementById('classifyFile').value = '';
-            document.getElementById('classifyFileInfo').style.display = 'none';
-        }
-        
 
         // ==========================
         // API Testing Functions
@@ -1703,11 +1720,12 @@
 
         async function testClassifyReview() {
             const review = document.getElementById('test-classify-review').value;
+            const file = document.getElementById('test-classify-file').files[0];
             const existingJson = document.getElementById('test-classify-json').value;
             const responseDiv = document.getElementById('test-classify-response');
 
-            if (!review) {
-                showToast('Please enter a review to test', 'error');
+            if (!review && !file) {
+                showToast('Please enter a review or select a file to test', 'error');
                 return;
             }
 
@@ -1715,17 +1733,14 @@
             responseDiv.textContent = 'Testing...';
 
             try {
-                const payload = { review };
-                if (existingJson) {
-                    payload.existing_json = JSON.parse(existingJson);
-                }
+                const formData = new FormData();
+                if (review) formData.append('review', review);
+                if (file) formData.append('file', file);
+                if (existingJson) formData.append('existing_json', existingJson);
 
                 const response = await fetch(`${API_BASE_URL}/classify-single-review`, {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify(payload)
+                    body: formData
                 });
 
                 const data = await response.json();
@@ -1758,13 +1773,18 @@
 
                 case 'classify-review':
                     const review = document.getElementById('test-classify-review').value;
+                    const file = document.getElementById('test-classify-file').files[0];
                     const json = document.getElementById('test-classify-json').value;
-                    code = `curl -X POST "${API_BASE_URL}/classify-single-review" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "review": "${review}"${json ? `,
-    "existing_json": ${json}` : ''}
-  }'`;
+                    
+                    if (file) {
+                        code = `curl -X POST "${API_BASE_URL}/classify-single-review" \\
+  -F "file=@${file.name}"${json ? ` \\
+  -F "existing_json=${json.replace(/"/g, '\\"')}"` : ''}`;
+                    } else {
+                        code = `curl -X POST "${API_BASE_URL}/classify-single-review" \\
+  -F "review=${review}"${json ? ` \\
+  -F "existing_json=${json.replace(/"/g, '\\"')}"` : ''}`;
+                    }
                     break;
             }
 
@@ -1808,38 +1828,36 @@
             });
         }
 
-        function formatFileSize(bytes) {
-            if (bytes === 0) return '0 Bytes';
-            const k = 1024;
-            const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-            const i = Math.floor(Math.log(bytes) / Math.log(k));
-            return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
+        function handleClassifyFile(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const fileInfo = document.getElementById('classifyFileInfo');
+            fileInfo.innerHTML = `
+                <div class="file-info">
+                    <div class="file-details">
+                        <span style="font-size: 24px;">📄</span>
+                        <div>
+                            <div style="font-weight: 600;">${file.name}</div>
+                            <div class="text-small text-muted">${formatFileSize(file.size)}</div>
+                        </div>
+                    </div>
+                    <button class="btn btn-secondary btn-small" onclick="removeClassifyFile()">Remove</button>
+                </div>
+            `;
+            fileInfo.style.display = 'block';
+            
+            // Clear text input if file is selected
+            document.getElementById('singleReview').value = '';
+        }
+
+        function removeClassifyFile() {
+            document.getElementById('classifyFile').value = '';
+            document.getElementById('classifyFileInfo').style.display = 'none';
         }
 
         function setupEventListeners() {
             // File upload drag and drop
-            const classifyUploadArea = document.querySelector('#classify-tab .file-upload-area');
-            if (classifyUploadArea) {
-                classifyUploadArea.addEventListener('dragover', (e) => {
-                    e.preventDefault();
-                    classifyUploadArea.classList.add('dragging');
-                });
-                
-                classifyUploadArea.addEventListener('dragleave', () => {
-                    classifyUploadArea.classList.remove('dragging');
-                });
-                
-                classifyUploadArea.addEventListener('drop', (e) => {
-                    e.preventDefault();
-                    classifyUploadArea.classList.remove('dragging');
-                    
-                    const files = e.dataTransfer.files;
-                    if (files.length > 0) {
-                        document.getElementById('classifyFile').files = files;
-                        handleClassifyFile({ target: { files: files } });
-                    }
-                });
-            }
             const uploadArea = document.querySelector('.file-upload-area');
             if (uploadArea) {
                 uploadArea.addEventListener('dragover', (e) => {
@@ -1873,6 +1891,30 @@
                     document.getElementById('existingCategories').value = JSON.stringify(categories, null, 2);
                 }
             });
+
+            // File upload drag and drop for classify
+            const classifyUploadArea = document.querySelector('#classify-tab .file-upload-area');
+            if (classifyUploadArea) {
+                classifyUploadArea.addEventListener('dragover', (e) => {
+                    e.preventDefault();
+                    classifyUploadArea.classList.add('dragging');
+                });
+                
+                classifyUploadArea.addEventListener('dragleave', () => {
+                    classifyUploadArea.classList.remove('dragging');
+                });
+                
+                classifyUploadArea.addEventListener('drop', (e) => {
+                    e.preventDefault();
+                    classifyUploadArea.classList.remove('dragging');
+                    
+                    const files = e.dataTransfer.files;
+                    if (files.length > 0) {
+                        document.getElementById('classifyFile').files = files;
+                        handleClassifyFile({ target: { files: files } });
+                    }
+                });
+            }
         }
     </script>
 </body>
