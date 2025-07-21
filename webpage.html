@@ -875,10 +875,16 @@
                 <p class="text-muted mb-3">Classify a single customer review against existing categories or create new ones.</p>
 
                 <div class="form-group">
-                    <label class="form-label">Customer Review</label>
-                    <textarea class="form-control" id="singleReview" 
-                              placeholder="Enter the customer review text here..."
-                              rows="4"></textarea>
+                    <label class="form-label">Or Upload a File</label>
+                    <div class="file-upload-area" onclick="document.getElementById('classifyFile').click()">
+                        <p style="font-size: 48px; margin-bottom: 8px;">📄</p>
+                        <p style="font-weight: 600; font-size: 18px;">Click to upload or drag & drop</p>
+                        <p class="text-small text-muted">Supports PDF, DOCX, TXT, and other text files</p>
+                    </div>
+                    <input type="file" id="classifyFile" style="display: none;" 
+                           accept=".txt, .pdf, .docx, .doc, .rtf, .odt, .html, .htm, .md, .csv, .xlsx, .xls"
+                           onchange="handleClassifyFile(event)">
+                    <div id="classifyFileInfo" style="display: none;"></div>
                 </div>
 
                 <div class="form-group">
@@ -895,31 +901,9 @@
                 </button>
 
                 <!-- Classification Result -->
-                <div id="classificationResult" class="classification-result d-none">
-                    <h3 class="classification-header">Classification Result</h3>
-                    <div class="classification-details">
-                        <div class="classification-field">
-                            <span class="field-label">Key Area:</span>
-                            <span class="field-value" id="classKeyArea"></span>
-                        </div>
-                        <div class="classification-field">
-                            <span class="field-label">Customer Problem:</span>
-                            <span class="field-value" id="classCustomerProblem"></span>
-                        </div>
-                        <div class="classification-field">
-                            <span class="field-label">Type:</span>
-                            <span class="field-value">
-                                <span id="classAreaType" class="area-type-badge"></span>
-                            </span>
-                        </div>
-                        <div class="classification-field">
-                            <span class="field-label">Sentiment Score:</span>
-                            <span class="field-value">
-                                <span id="classSentiment"></span>
-                                <span id="classSentimentBadge" class="sentiment-badge"></span>
-                            </span>
-                        </div>
-                    </div>
+                <div id="classificationResult" class="d-none">
+                    <h3 style="margin: 32px 0 16px; font-size: 20px;">Classification Results</h3>
+                    <div id="classificationItems"></div>
                 </div>
             </div>
         </div>
@@ -1540,49 +1524,49 @@
         async function classifySingleReview() {
             const review = document.getElementById('singleReview').value.trim();
             const existingJson = document.getElementById('existingCategories').value.trim();
-
-            if (!review) {
-                showToast('Please enter a review to classify', 'error');
+            const file = document.getElementById('classifyFile').files[0];
+        
+            if (!review && !file) {
+                showToast('Please enter a review or upload a file to classify', 'error');
                 return;
             }
-
+        
             const btn = event.target;
             const originalText = btn.innerHTML;
             btn.innerHTML = '<span class="spinner"></span> Classifying...';
             btn.disabled = true;
-
+        
             try {
-                const payload = {
-                    review: review
-                };
-
-                if (existingJson) {
-                    try {
-                        payload.existing_json = JSON.parse(existingJson);
-                    } catch (e) {
-                        throw new Error('Invalid JSON format for existing categories');
-                    }
+                const formData = new FormData();
+                
+                if (review) {
+                    formData.append('review', review);
                 }
-
+                
+                if (file) {
+                    formData.append('file', file);
+                }
+                
+                if (existingJson) {
+                    formData.append('existing_json', existingJson);
+                }
+        
                 const response = await fetch(`${API_BASE_URL}/classify-single-review`, {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify(payload)
+                    body: formData
                 });
-
+        
                 if (!response.ok) {
                     const error = await response.json();
                     throw new Error(error.detail || 'Classification failed');
                 }
-
+        
                 const data = await response.json();
                 state.lastClassification = data;
                 
-                displayClassificationResult(data);
+                displayClassificationResults(data);
                 showToast('Classification completed!', 'success');
-
+        
             } catch (error) {
                 showToast(`Error: ${error.message}`, 'error');
                 console.error('Classification error:', error);
@@ -1591,26 +1575,80 @@
                 btn.disabled = false;
             }
         }
-
-        function displayClassificationResult(data) {
+        function displayClassificationResults(results) {
             const resultDiv = document.getElementById('classificationResult');
+            const itemsContainer = document.getElementById('classificationItems');
+            
             resultDiv.classList.remove('d-none');
-
-            document.getElementById('classKeyArea').textContent = data.key_area;
-            document.getElementById('classCustomerProblem').textContent = data.customer_problem;
-            document.getElementById('classSentiment').textContent = data.sentiment_score.toFixed(3);
             
-            const badge = document.getElementById('classSentimentBadge');
-            badge.innerHTML = getSentimentBadge(data.sentiment_score);
+            // Clear previous results
+            itemsContainer.innerHTML = '';
             
-            // Display area type
-            const areaTypeBadge = document.getElementById('classAreaType');
-            const areaType = data.area_type || 'issue'; // Default to issue if not provided
-            areaTypeBadge.textContent = areaType.charAt(0).toUpperCase() + areaType.slice(1);
-            areaTypeBadge.className = `area-type-badge area-type-${areaType}`;
-
+            // Display each classification
+            results.forEach((item, index) => {
+                const itemCard = document.createElement('div');
+                itemCard.className = `key-area-card ${item.area_type === 'feature' ? 'feature-area' : 'issue-area'}`;
+                
+                itemCard.innerHTML = `
+                    <div class="key-area-header">
+                        <div>
+                            <div class="key-area-title-wrapper">
+                                <div class="key-area-title">${item.key_area}</div>
+                                <span class="area-type-badge area-type-${item.area_type}">${item.area_type.charAt(0).toUpperCase() + item.area_type.slice(1)}</span>
+                            </div>
+                            <div class="customer-problem">${item.customer_problem}</div>
+                        </div>
+                        <div class="sentiment-badge ${getSentimentClass(item.sentiment_score)}">
+                            ${getSentimentLabel(item.sentiment_score)} (${item.sentiment_score.toFixed(2)})
+                        </div>
+                    </div>
+                `;
+                
+                itemsContainer.appendChild(itemCard);
+            });
+            
             resultDiv.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }
+        
+        function getSentimentClass(score) {
+            if (score >= 0.2) return 'sentiment-positive';
+            if (score <= -0.2) return 'sentiment-negative';
+            return 'sentiment-neutral';
+        }
+        
+        function getSentimentLabel(score) {
+            if (score >= 0.2) return 'Positive';
+            if (score <= -0.2) return 'Negative';
+            return 'Neutral';
+        }
+        function handleClassifyFile(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+        
+            const fileInfo = document.getElementById('classifyFileInfo');
+            fileInfo.innerHTML = `
+                <div class="file-info">
+                    <div class="file-details">
+                        <span style="font-size: 24px;">📄</span>
+                        <div>
+                            <div style="font-weight: 600;">${file.name}</div>
+                            <div class="text-small text-muted">${formatFileSize(file.size)}</div>
+                        </div>
+                    </div>
+                    <button class="btn btn-secondary btn-small" onclick="removeClassifyFile()">Remove</button>
+                </div>
+            `;
+            fileInfo.style.display = 'block';
+            
+            // Clear text input if file is selected
+            document.getElementById('singleReview').value = '';
+        }
+        
+        function removeClassifyFile() {
+            document.getElementById('classifyFile').value = '';
+            document.getElementById('classifyFileInfo').style.display = 'none';
+        }
+        
 
         // ==========================
         // API Testing Functions
@@ -1780,6 +1818,28 @@
 
         function setupEventListeners() {
             // File upload drag and drop
+            const classifyUploadArea = document.querySelector('#classify-tab .file-upload-area');
+            if (classifyUploadArea) {
+                classifyUploadArea.addEventListener('dragover', (e) => {
+                    e.preventDefault();
+                    classifyUploadArea.classList.add('dragging');
+                });
+                
+                classifyUploadArea.addEventListener('dragleave', () => {
+                    classifyUploadArea.classList.remove('dragging');
+                });
+                
+                classifyUploadArea.addEventListener('drop', (e) => {
+                    e.preventDefault();
+                    classifyUploadArea.classList.remove('dragging');
+                    
+                    const files = e.dataTransfer.files;
+                    if (files.length > 0) {
+                        document.getElementById('classifyFile').files = files;
+                        handleClassifyFile({ target: { files: files } });
+                    }
+                });
+            }
             const uploadArea = document.querySelector('.file-upload-area');
             if (uploadArea) {
                 uploadArea.addEventListener('dragover', (e) => {
