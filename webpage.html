@@ -894,14 +894,6 @@
                     <div id="classifyFileInfo" style="display: none;"></div>
                 </div>
 
-                <div class="form-group">
-                    <label class="form-label">Existing Categories (JSON)</label>
-                    <textarea class="form-control" id="existingCategories" 
-                              placeholder='[{"key_area": "App Performance", "customer_problem": "App crashes frequently during usage"}]'
-                              rows="6"></textarea>
-                    <p class="text-small text-muted mt-1">Paste your existing analysis results or leave empty to create new categories</p>
-                </div>
-
                 <button class="btn" onclick="classifySingleReview()">
                     <span>Classify Text</span>
                     <span>🏷️</span>
@@ -1131,25 +1123,6 @@
                             </div>
                             <div id="test-classify-response" class="test-response" style="display: none;"></div>
                         </div>
-
-                        <div class="code-block">
-                            <div class="code-header">
-                                <span class="code-title">cURL Example (JSON Body)</span>
-                                <button class="btn copy-btn" onclick="copyCode('classify-curl-json')">Copy</button>
-                            </div>
-                            <pre id="classify-curl-json">curl -X POST "<span class="base-url-placeholder">${window.location.origin}</span>/classify-single-review" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "review": "The app crashes every time I try to upload photos",
-    "existing_json": [
-      {
-        "key_area": "App Performance",
-        "customer_problem": "App crashes frequently during usage"
-      }
-    ]
-  }'</pre>
-                        </div>
-
                         <div class="code-block">
                             <div class="code-header">
                                 <span class="code-title">cURL Example (Text Input)</span>
@@ -1168,6 +1141,31 @@
                             <pre id="classify-curl-file">curl -X POST "<span class="base-url-placeholder">${window.location.origin}</span>/classify-single-review" \
   -F "file=@meeting_notes.pdf" \
   -F 'existing_json=[{"key_area":"Feature Requests","customer_problem":"Users want new capabilities"}]'</pre>
+                        </div>
+                        <div class="code-block">
+                            <div class="code-header">
+                                <span class="code-title">Response Example (Array)</span>
+                            </div>
+                            <pre>[
+                              {
+                                "key_area": "App Performance",
+                                "customer_problem": "App crashes during photo upload operations causing data loss",
+                                "sentiment_score": -0.85,
+                                "area_type": "issue"
+                              },
+                              {
+                                "key_area": "User Interface",
+                                "customer_problem": "Users want dark mode for better nighttime usage and reduced eye strain",
+                                "sentiment_score": 0.3,
+                                "area_type": "feature"
+                              },
+                              {
+                                "key_area": "Data Security",
+                                "customer_problem": "Concerns about data encryption during transmission between app and servers",
+                                "sentiment_score": -0.4,
+                                "area_type": "issue"
+                              }
+                            ]</pre>
                         </div>
                     </div>
                 </div>
