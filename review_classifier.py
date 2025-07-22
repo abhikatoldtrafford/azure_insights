@@ -26,7 +26,7 @@ import re
 # Core imports
 import pandas as pd
 import chardet
-
+import pdfplumber
 # Try importing Unstructured components
 try:
     from unstructured.partition.auto import partition
@@ -167,10 +167,7 @@ try:
 except ImportError:
     markdown = None
 
-try:
-    import pdfplumber
-except ImportError:
-    pdfplumber = None
+
     
 # Add Pydantic models for validation
 
@@ -348,9 +345,13 @@ class UnstructuredDocumentExtractor:
         
         try:
             # Prepare kwargs
+            if encoding is None and file_ext in ['.csv', '.txt', '.log', '.md']:
+                encoding = self._detect_encoding(file_content)
+                self.logger.info(f"Auto-detected encoding: {encoding}")
+            
             kwargs = {
                 "filename": tmp_path,
-                "encoding": encoding,
+                "encoding": encoding or 'utf-8',  # Use detected or default
                 "max_partition": max_partition_length,
             }
             
@@ -505,45 +506,24 @@ class UnstructuredDocumentExtractor:
     
     def _extract_pdf_fallback(self, file_content: bytes) -> str:
         """Fallback PDF extraction without Unstructured."""
-        # Try pdfplumber first (better for tables)
-        if pdfplumber is not None: 
-            try:
-                import pdfplumber
-                text_parts = []
-                
-                with pdfplumber.open(BytesIO(file_content)) as pdf:
-                    for i, page in enumerate(pdf.pages):
-                        page_text = page.extract_text()
-                        if page_text:
-                            text_parts.append(f"[Page {i+1}]\n{page_text}")
+        try:
+            text_parts = []   
+            with pdfplumber.open(BytesIO(file_content)) as pdf:
+                for i, page in enumerate(pdf.pages):
+                    page_text = page.extract_text()
+                    if page_text:
+                        text_parts.append(f"[Page {i+1}]\n{page_text}")
                         
                         # Extract tables
-                        tables = page.extract_tables()
-                        for table in tables:
-                            if table:
-                                table_text = self._format_table(table)
-                                text_parts.append(table_text)
+                    tables = page.extract_tables()
+                    for table in tables:
+                        if table:
+                            table_text = self._format_table(table)
+                            text_parts.append(table_text)
                 
-                return "\n\n".join(text_parts)
-            except:
-                pass
-        
-        # Try PyPDF2
-        if PyPDF2:
-            try:
-                pdf_file = BytesIO(file_content)
-                pdf_reader = PyPDF2.PdfReader(pdf_file)
-                
-                text_parts = []
-                for page_num in range(len(pdf_reader.pages)):
-                    page = pdf_reader.pages[page_num]
-                    text = page.extract_text()
-                    if text.strip():
-                        text_parts.append(f"[Page {page_num + 1}]\n{text}")
-                
-                return "\n\n".join(text_parts)
-            except:
-                pass
+            return "\n\n".join(text_parts)
+        except:
+            pass
         
         return self._extract_text_with_encoding(file_content)
     
