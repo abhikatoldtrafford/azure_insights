@@ -344,6 +344,7 @@ class UnstructuredDocumentExtractor:
             tmp_path = tmp_file.name
         
         try:
+            file_ext = os.path.splitext(filename)[1].lower()
             # Prepare kwargs
             if encoding is None and file_ext in ['.csv', '.txt', '.log', '.md']:
                 encoding = self._detect_encoding(file_content)
@@ -355,8 +356,6 @@ class UnstructuredDocumentExtractor:
                 "max_partition": max_partition_length,
             }
             
-            # Add strategy for supported file types
-            file_ext = os.path.splitext(filename)[1].lower()
             if file_ext in ['.pdf', '.png', '.jpg', '.jpeg', '.tiff', '.bmp', '.heic']:
                 kwargs["strategy"] = strategy
                 if languages:
@@ -5340,11 +5339,19 @@ CRITICAL INSTRUCTIONS:
 6. Classify each as either "feature" (requests/suggestions/enhancements) or "issue" (problems/complaints/bugs)
 7. Calculate sentiment based on how each topic is discussed
 
-IMPORTANT: Extract distinct items separately. For example, if an email mentions "Create Super API, enhance Review API, and implement across endpoints" - that's 3 items, not 1. Aim for 2-8 key areas based on what's actually mentioned.
+IMPORTANT: Extract the most significant distinct items, aiming for 2-6 key areas maximum. While each distinct issue should be captured, consolidate closely related items when reasonable. For example, if an email mentions multiple API improvements, consider whether they represent one cohesive need or truly separate concerns. Quality over quantity - focus on the most impactful categories.
 
 CLASSIFICATION RULES:
 - "feature" = requests, suggestions, enhancements, improvements, "wish", "want", "need", "should have", "would be nice"
 - "issue" = problems, bugs, complaints, difficulties, frustrations, "broken", "doesn't work", "confusing", "slow", "failing"
+
+CONSOLIDATION GUIDELINES:
+- Maximum 6 categories total - be selective and focus on the most significant items
+- Consolidate related items if they represent aspects of the same core issue/request
+- Example: "API is slow" and "API timeouts" can be one "API Performance" category
+- But keep truly distinct items separate: "API performance" and "API documentation" are different
+- Prioritize categories by impact and frequency of mention
+- If more than 6 distinct areas exist, select the 6 most important/impactful ones
 
 SENTIMENT SCORING:
 - -1.0 to -0.7: Extremely negative (terrible, awful, hate, worst, critical failure)
@@ -5510,21 +5517,22 @@ SPECIAL CASES:
    - Return a single item with key_area: "General Feedback"
    - Example: "I have some thoughts" → general feedback category
 
-3. Minimum classifications:
+3. Category count guidelines:
    - 0 items: Only for text with no actionable content
    - 1 item: For vague or single-topic text
-   - 2+ items: For text mentioning multiple distinct topics
+   - 2-6 items: For text mentioning multiple distinct topics (maximum 6)
+   - If more than 6 potential categories exist, prioritize the most significant ones
 
 Remember:
 - ALWAYS return a JSON array starting with [ and ending with ]
 - NEVER return a single object {...} - always an array [...]
-- Extract EACH distinct problem, request, or action item separately
-- Minimum 2 items for any text over 100 characters
-- Don't merge items just because they're somewhat related
-- Look for numbered lists, bullet points, or multiple topics in one sentence
+- Extract the most significant distinct items (maximum 6 categories)
+- 2-6 items for meaningful text, focusing on quality over quantity
+- Consolidate closely related items when they represent the same core concern
+- Keep truly distinct issues/features separate
 - Be specific in the customer_problem - don't be vague or overly broad
 - Only output the JSON array, nothing else
-- If the text has multiple sentences, there should usually be multiple items in your array
+- Prioritize impact and importance when selecting categories
 '''
 
         # Try GPT classification with retries
