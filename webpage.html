@@ -886,22 +886,17 @@
                     <div class="file-upload-area" onclick="document.getElementById('classifyFile').click()">
                         <p style="font-size: 48px; margin-bottom: 8px;">📄</p>
                         <p style="font-weight: 600; font-size: 18px;">Click to upload or drag & drop</p>
-                        <p class="text-small text-muted">Supports PDF, DOCX, TXT, and other text files</p>
+                        <p class="text-small text-muted">Supports PDF, DOCX, TXT, and other text files. Selected file will be shown below.</p>
                     </div>
                     <input type="file" id="classifyFile" style="display: none;" 
                            accept=".txt, .pdf, .docx, .doc, .rtf, .odt, .html, .htm, .md, .csv, .xlsx, .xls"
                            onchange="handleClassifyFile(event)">
                     <div id="classifyFileInfo" style="display: none;"></div>
                 </div>
-        
-                <div class="form-group">
-                    <label class="form-label">Existing Categories (Optional)</label>
-                    <textarea class="form-control" id="existingCategories" 
-                              placeholder='[{"key_area": "App Performance", "customer_problem": "App crashes during usage"}]'
-                              rows="4"></textarea>
-                    <p class="text-small text-muted mt-1">Provide existing categories in JSON format to help classify the text</p>
-                </div>
-        
+                <button class="btn btn-secondary" onclick="clearClassifyInputs()" style="margin-left: 10px;">
+                    <span>Clear All</span>
+                    <span>🗑️</span>
+                </button>
                 <button class="btn" onclick="classifySingleReview()">
                     <span>Classify Text</span>
                     <span>🏷️</span>
@@ -1856,7 +1851,25 @@
             // Clear text input if file is selected
             document.getElementById('singleReview').value = '';
         }
-
+        function clearClassifyInputs() {
+            // Clear text input
+            document.getElementById('singleReview').value = '';
+            
+            // Clear file input and hide file info
+            document.getElementById('classifyFile').value = '';
+            document.getElementById('classifyFileInfo').style.display = 'none';
+            
+            // Clear existing categories
+            document.getElementById('existingCategories').value = '';
+            
+            // Hide classification results if visible
+            const resultDiv = document.getElementById('classificationResult');
+            if (resultDiv) {
+                resultDiv.classList.add('d-none');
+            }
+            
+            showToast('All inputs cleared', 'info');
+        }
         function removeClassifyFile() {
             document.getElementById('classifyFile').value = '';
             document.getElementById('classifyFileInfo').style.display = 'none';
