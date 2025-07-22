@@ -506,7 +506,7 @@ class UnstructuredDocumentExtractor:
     def _extract_pdf_fallback(self, file_content: bytes) -> str:
         """Fallback PDF extraction without Unstructured."""
         # Try pdfplumber first (better for tables)
-        if pdfplumber:
+        if pdfplumber is not None: 
             try:
                 import pdfplumber
                 text_parts = []
@@ -836,6 +836,27 @@ class UnstructuredDocumentExtractor:
     def _emergency_text_extraction(self, file_content: bytes) -> str:
         """Emergency fallback to extract any readable text."""
         try:
+            # First, check if it's a known binary format that we shouldn't try to decode
+            file_header = file_content[:10] if len(file_content) >= 10 else file_content
+            
+            # Check for PDF header
+            if file_header.startswith(b'%PDF'):
+                self.logger.error("Emergency extraction called on PDF file - cannot extract without proper tools")
+                return "PDF file detected but text extraction failed. Please ensure PDF extraction libraries are installed."
+                
+            # Check for other binary formats
+            binary_headers = [
+                b'\x50\x4b\x03\x04',  # ZIP/DOCX/XLSX
+                b'\xd0\xcf\x11\xe0',  # DOC/XLS
+                b'\x89\x50\x4e\x47',  # PNG
+                b'\xff\xd8\xff',      # JPEG
+            ]
+            
+            for header in binary_headers:
+                if file_header.startswith(header):
+                    self.logger.error("Emergency extraction called on binary file - cannot extract")
+                    return "Binary file detected but text extraction failed. Please ensure document processing libraries are installed."
+            
             # Try to extract printable ASCII and common Unicode
             text_parts = []
             i = 0
@@ -862,7 +883,13 @@ class UnstructuredDocumentExtractor:
             text = re.sub(r'\s+', ' ', text)
             text = re.sub(r' +', ' ', text)
             
-            return text.strip()
+            result = text.strip()
+            
+            # If we got very little text from a large file, it's probably binary
+            if len(result) < 100 and len(file_content) > 1000:
+                return "Unable to extract meaningful text from this document. The file may be corrupted or in an unsupported format."
+                
+            return result if result else "Unable to extract text from this document."
             
         except Exception as e:
             self.logger.error(f"Emergency extraction failed: {str(e)}")
@@ -875,6 +902,7 @@ async def extract_text_internal(
     encoding: Optional[str] = None,
     logger: Optional[logging.Logger] = None
 ) -> str:
+    max_chars = 50000
     """
     Internal function to extract text from document content.
     This can be called from other API endpoints.
@@ -898,13 +926,26 @@ async def extract_text_internal(
     
     try:
         extractor = UnstructuredDocumentExtractor(logger=logger)
-        return extractor.extract_text(
+        extracted_text = extractor.extract_text(
             file_content=file_content,
             filename=filename,
             encoding=encoding,
             strategy=strategy,
             languages=languages
         )
+        if max_chars and len(extracted_text) > max_chars:
+            logger.info(f"Truncating extracted text from {len(extracted_text)} to {max_chars} characters")
+            # Try to truncate at a sentence boundary
+            truncated = extracted_text[:max_chars]
+            last_period = truncated.rfind('.')
+            last_newline = truncated.rfind('\n')
+            cutoff = max(last_period, last_newline)
+            if cutoff > max_chars * 0.8:  # Only use if it's not too far back
+                extracted_text = truncated[:cutoff + 1]
+            else:
+                extracted_text = truncated + "..."
+                
+        return extracted_text
     except Exception as e:
         logger.error(f"Internal text extraction failed: {str(e)}")
         raise
