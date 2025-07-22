@@ -873,14 +873,14 @@
             <div class="section">
                 <h2 class="section-title">Classify Text Content</h2>
                 <p class="text-muted mb-3">Classify any text (reviews, emails, meeting notes, etc.) into multiple categories with sentiment analysis.</p>
-
+        
                 <div class="form-group">
                     <label class="form-label">Text Content</label>
                     <textarea class="form-control" id="singleReview" 
                               placeholder="Enter any text: customer review, email, meeting notes, chat transcript, etc..."
                               rows="4"></textarea>
                 </div>
-
+        
                 <div class="form-group">
                     <label class="form-label">Or Upload a File</label>
                     <div class="file-upload-area" onclick="document.getElementById('classifyFile').click()">
@@ -893,12 +893,20 @@
                            onchange="handleClassifyFile(event)">
                     <div id="classifyFileInfo" style="display: none;"></div>
                 </div>
-
+        
+                <div class="form-group">
+                    <label class="form-label">Existing Categories (Optional)</label>
+                    <textarea class="form-control" id="existingCategories" 
+                              placeholder='[{"key_area": "App Performance", "customer_problem": "App crashes during usage"}]'
+                              rows="4"></textarea>
+                    <p class="text-small text-muted mt-1">Provide existing categories in JSON format to help classify the text</p>
+                </div>
+        
                 <button class="btn" onclick="classifySingleReview()">
                     <span>Classify Text</span>
                     <span>🏷️</span>
                 </button>
-
+        
                 <!-- Classification Results -->
                 <div id="classificationResult" class="d-none">
                     <h3 style="margin: 32px 0 16px; font-size: 20px;">Classification Results</h3>
